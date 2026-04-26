@@ -8,8 +8,9 @@ version = "0.1.0"
 description = "H3 and NetworkX based route affinity graph toolkit."
 readme = "README.md"
 requires-python = ">=3.10"
+license = "MIT"
 authors = [
-  { name = "Sameer" }
+  { name = "Sameer", email = "sameerkumarroy073@gmail.com" }
 ]
 dependencies = [
   "h3>=4.0.0",
@@ -26,10 +27,15 @@ classifiers = [
   "Topic :: Scientific/Engineering :: GIS"
 ]
 
+[project.urls]
+Homepage = "https://github.com/iams31/sameer_graph_lib"
+Repository = "https://github.com/iams31/sameer_graph_lib"
+Issues = "https://github.com/iams31/sameer_graph_lib/issues"
+
 [project.optional-dependencies]
 plot = ["matplotlib>=3.7"]
 geo = ["contextily>=1.5", "geopandas>=0.14", "shapely>=2.0"]
-dev = ["pytest>=8.0", "build>=1.2"]
+dev = ["pytest>=8.0", "build>=1.2", "twine>=5.1"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

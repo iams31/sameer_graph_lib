@@ -18,6 +18,20 @@ If your machine uses `uv`, run commands through the managed environment:
 uv run --extra dev --extra plot python -c "import sameer_graph_lib; print(sameer_graph_lib.__version__)"
 ```
 
+## Install
+
+From PyPI after publication:
+
+```powershell
+pip install sameer-graph-lib
+```
+
+With optional plotting and geospatial extras:
+
+```powershell
+pip install "sameer-graph-lib[plot,geo]"
+```
+
 ## Quick start
 
 ```python
@@ -95,6 +109,55 @@ python -m pytest
 python -m build
 uv run --extra dev pytest -q
 uv run --extra dev python -m build
+uv run --extra dev python -m twine check dist/*
 ```
 
 Build artifacts will appear in `dist/` after `python -m build`.
+
+## Publish To PyPI
+
+1. Build the package:
+
+```powershell
+uv run --extra dev python -m build
+```
+
+2. Validate the package metadata:
+
+```powershell
+uv run --extra dev python -m twine check dist/*
+```
+
+3. Upload to PyPI:
+
+```powershell
+uv run --extra dev python -m twine upload dist/*
+```
+
+After upload, users can install it with:
+
+```powershell
+pip install sameer-graph-lib
+```
+
+## Publish From GitHub
+
+This repo also includes a Trusted Publishing workflow in
+[.github/workflows/publish.yml](C:/Users/rrran/Desktop/sameer_graph_lib/.github/workflows/publish.yml:1).
+
+To finish that setup:
+
+1. Create the project on PyPI, or reserve the name `sameer-graph-lib`.
+2. On PyPI, open the project settings and add a Trusted Publisher for:
+   `owner`: `iams31`
+   `repository`: `sameer_graph_lib`
+   `workflow`: `publish.yml`
+   `environment`: `pypi`
+3. Create a GitHub Release, or run the workflow manually from the Actions tab.
+
+After that, GitHub Actions can publish without storing a long-lived PyPI token.
+
+Official references:
+
+- PyPI Trusted Publishing: https://docs.pypi.org/trusted-publishers/
+- Packaging guide upload flow: https://packaging.python.org/tutorials/packaging-projects/
