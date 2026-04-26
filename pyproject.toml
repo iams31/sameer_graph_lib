@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sameer-graph-lib"
+version = "0.1.0"
+description = "H3 and NetworkX based route affinity graph toolkit."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+  { name = "Sameer" }
+]
+dependencies = [
+  "h3>=4.0.0",
+  "networkx>=3.0"
+]
+keywords = ["h3", "networkx", "geospatial", "routing", "graph"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: GIS"
+]
+
+[project.optional-dependencies]
+plot = ["matplotlib>=3.7"]
+geo = ["contextily>=1.5", "geopandas>=0.14", "shapely>=2.0"]
+dev = ["pytest>=8.0", "build>=1.2"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
