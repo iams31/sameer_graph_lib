@@ -14,7 +14,8 @@ authors = [
 ]
 dependencies = [
   "h3>=4.0.0",
-  "networkx>=3.0"
+  "networkx>=3.0",
+  "polyline>=2.0"
 ]
 keywords = ["h3", "networkx", "geospatial", "routing", "graph"]
 classifiers = [
@@ -35,6 +36,7 @@ Issues = "https://github.com/iams31/sameer_graph_lib/issues"
 [project.optional-dependencies]
 plot = ["matplotlib>=3.7"]
 geo = ["contextily>=1.5", "geopandas>=0.14", "shapely>=2.0"]
+motion = ["numpy>=1.24", "pyproj>=3.5"]
 dev = ["pytest>=8.0", "build>=1.2", "twine>=5.1"]
 
 [tool.setuptools.packages.find]
