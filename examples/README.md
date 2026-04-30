@@ -26,3 +26,16 @@ For the basemap image, run:
 ```powershell
 uv run --extra plot --extra geo python examples\create_h3_array_graph.py
 ```
+
+## Pandas row graph example
+
+To create one separate `HexGraph` for each DataFrame row that contains a list
+of H3 cells, run:
+
+```powershell
+python -m pip install pandas
+uv run --extra plot python examples\create_pandas_row_graphs.py
+```
+
+This saves `pandas_row_graph_0.png`, `pandas_row_graph_1.png`, ... and stores
+each row's independent graph in a `graph` column.
