@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sameer-graph-lib"
-version = "0.2.0"
-description = "H3 and NetworkX based route affinity graph toolkit."
+version = "0.3.0"
+description = "H3 and NetworkX based route affinity, route-flow and plotting toolkit."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
@@ -17,7 +17,7 @@ dependencies = [
   "networkx>=3.0",
   "polyline>=2.0"
 ]
-keywords = ["h3", "networkx", "geospatial", "routing", "graph"]
+keywords = ["h3", "networkx", "geospatial", "routing", "graph", "visualization", "pandas"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",
@@ -37,6 +37,8 @@ Issues = "https://github.com/iams31/sameer_graph_lib/issues"
 plot = ["matplotlib>=3.7"]
 geo = ["contextily>=1.5", "geopandas>=0.14", "shapely>=2.0"]
 motion = ["numpy>=1.24", "pyproj>=3.5"]
+route = ["pandas>=2.0", "numpy>=1.24", "xarray>=2023.1"]
+analysis = ["pandas>=2.0", "numpy>=1.24", "xarray>=2023.1", "matplotlib>=3.7"]
 dev = ["pytest>=8.0", "build>=1.2", "twine>=5.1"]
 
 [tool.setuptools.packages.find]
