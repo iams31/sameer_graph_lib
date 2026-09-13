@@ -486,7 +486,7 @@ def plot_flow(
         if sub.graph["grain"]:
             bits.append(", ".join(f"{k}={v}" for k, v in sub.graph["grain"].items()))
         title = "  |  ".join(bits)
-    ax.set_title(title, fontsize=12, fontweight="semibold", color=INK, pad=20)
+    ax.set_title(title, fontsize=12, fontweight="bold", color=INK, pad=20)
     ax.margins(x=0.14, y=0.18)
     ax.axis("off")
     fig.tight_layout(rect=(0, 0.04, 1, 1) if legend else None)
@@ -556,7 +556,7 @@ def plot_partners(
         if grain_values:
             grain_note = "  |  " + ", ".join(f"{k}={v}" for k, v in grain_values.items())
         title = f"Top {top} partners of {node}  |  {metric}{grain_note}"
-    fig.suptitle(title, fontsize=13, fontweight="semibold", color=INK)
+    fig.suptitle(title, fontsize=13, fontweight="bold", color=INK)
     fig.tight_layout()
     return fig
 
@@ -620,7 +620,7 @@ def plot_profile(
                         fontsize=6, color="white" if value > midpoint else INK)
 
     ax.set_title(title or f"{metric} profile  |  {what}", fontsize=12,
-                 fontweight="semibold", color=INK)
+                 fontweight="bold", color=INK)
     fig.tight_layout()
     return fig
 
@@ -673,7 +673,7 @@ def plot_matrix(
                             fontsize=6, color="white" if value > midpoint else INK)
 
     ax.set_title(title or f"Pickup x drop {metric}", fontsize=12,
-                 fontweight="semibold", color=INK)
+                 fontweight="bold", color=INK)
     fig.tight_layout()
     return fig
 
@@ -768,7 +768,7 @@ def plot_route_graph(
         fig.colorbar(mappable, ax=ax, label=metric, shrink=0.8)
 
     ax.set_title(title or f"Route graph  |  {metric}", fontsize=12,
-                 fontweight="semibold", color=INK)
+                 fontweight="bold", color=INK)
     ax.margins(0.1)
     if layout in ("circular", "shell"):
         ax.set_aspect("equal", adjustable="box")   # a round ring, not an ellipse
