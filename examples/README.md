@@ -39,3 +39,26 @@ uv run --extra plot python examples\create_pandas_row_graphs.py
 
 This saves `pandas_row_graph_0.png`, `pandas_row_graph_1.png`, ... and stores
 each row's independent graph in a `graph` column.
+
+## Route flow example (pickup -> drop graph)
+
+`route_flow_example.ipynb` is a notebook, with its outputs saved, that walks
+through the whole route stack on a synthetic frame shaped like a real export
+(`pickup_cluster`, `drop_cluster`, `week_period`, `hour` plus metric columns):
+
+1. build the graph from a DataFrame in one call, and see which columns the
+   schema decided to sum and which to average
+2. rank where a cluster's orders come from and where they go
+3. plot that flow with a separate top-k per level, several variables at a time
+   as tables on the nodes and edges
+4. the supporting views: partners, week_period x hour profile, pickup x drop
+   matrix, the whole graph as a ranked ring
+5. the stateless DataFrame plotter: multi-column panels, multi-axis charts,
+   distribution checks and group comparisons
+
+Open it with Jupyter, or just read it on GitHub - every cell already shows its
+output:
+
+```powershell
+uv run --extra analysis jupyter lab examplesoute_flow_example.ipynb
+```
