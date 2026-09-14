@@ -225,7 +225,11 @@ def plot_flow(
     edge_metrics=None,
     size_metric: str | None = None,
     per_parent: bool = True,
+    rank_by: str = "edge",
+    node_direction: str = "out",
     min_value: float | None = None,
+    edge_filter=None,
+    node_filter=None,
     include_cross_edges: bool = False,
     layout: str = "layered",
     level_gap: float = 2.6,
@@ -254,6 +258,10 @@ def plot_flow(
     annotate_levels: bool = True,
     node_metric=None,
     edge_metric=None,
+    subgraph=None,
+    node_values=None,
+    level_label=None,
+    legend_labels=None,
     **grain_values,
 ):
     """Plot the top inbound and outbound clusters around one or more focus nodes.
@@ -276,9 +284,21 @@ def plot_flow(
         metric. (``node_metric``/``edge_metric`` are accepted as aliases.)
     size_metric:
         Variable behind the node sizes. Defaults to the first node metric.
+    node_direction:
+        Which side of a cluster the node tables measure. ``"out"`` (the
+        default) is the orders it sends, so the number reads as *what
+        originates here*; ``"in"`` is what it receives, ``"both"`` their sum.
     value_format:
         ``None`` picks a format per value, or pass one format string for all
         metrics, or a ``{metric: format}`` dict.
+    rank_by:
+        ``"edge"`` keeps the biggest routes at each hop, ``"node"`` keeps the
+        biggest clusters.
+    edge_filter, node_filter:
+        Absolute tests applied before walking, e.g.
+        ``edge_filter={"orders": 500, "speed": (">", 0.25)}``. Routes and
+        clusters that fail are not traversed at all, so the top-k at each hop
+        is picked from what survives.
     grain_values:
         Grain filters such as ``hour=[8, 9, 10]`` or ``week_period="weekday"``.
 
@@ -296,13 +316,23 @@ def plot_flow(
     size_metric = size_metric or node_metric_names[0]
     table_font_size = table_font_size or max(font_size - 1, 5)
 
-    sub = graph.flow_subgraph(
+    sub = subgraph if subgraph is not None else graph.flow_subgraph(
         focus, upstream=upstream, downstream=downstream, metric=metric,
-        per_parent=per_parent, min_value=min_value,
+        per_parent=per_parent, rank_by=rank_by, min_value=min_value,
+        edge_filter=edge_filter, node_filter=node_filter,
         include_cross_edges=include_cross_edges, **grain_values,
     )
     if sub.number_of_nodes() == 0:
         raise ValueError("Nothing to plot: the expansion selected no clusters")
+    if sub.number_of_edges() == 0 and subgraph is None:
+        # a caller that built its own subgraph warns in its own words
+        import warnings
+
+        warnings.warn(
+            "No routes survived: the focus cluster is drawn on its own. "
+            "Loosen edge_filter/node_filter/min_value, or raise the top-k.",
+            stacklevel=2,
+        )
 
     focus_nodes = sub.graph["focus"]
     if layout == "layered":
@@ -329,10 +359,16 @@ def plot_flow(
     # ---- node styling -------------------------------------------------- #
     nodes = list(sub.nodes)
 
+    if node_direction not in ("in", "out", "both"):
+        raise ValueError("node_direction must be 'in', 'out' or 'both'")
+
     def node_value(node, name):
+        if node_values is not None and name in node_values.get(node, {}):
+            return node_values[node][name]
         if name == "count":
             return float(sub.degree(node))
-        return graph.node_value(node, metric=name, direction="both", **grain_values)
+        return graph.node_value(node, metric=name, direction=node_direction,
+                                **grain_values)
 
     node_table_values = {node: [node_value(node, name) for name in node_metric_names]
                          for node in nodes}
@@ -442,7 +478,9 @@ def plot_flow(
     # ---- chrome -------------------------------------------------------- #
     if annotate_levels and layout == "layered" and pos:
         for level in sorted({int(d.get("level", 0)) for _, d in sub.nodes(data=True)}):
-            if level == 0:
+            if level_label is not None:
+                text = level_label(level)
+            elif level == 0:
                 text = "FOCUS"
             elif level < 0:
                 text = f"SOURCES  L{abs(level)}"
@@ -457,14 +495,21 @@ def plot_flow(
                         fontsize=font_size, color=MUTED_INK)
 
     if legend:
+        focus_text, source_text, drop_text = legend_labels or (
+            "focus cluster", "sources (orders come from)", "drops (orders go to)")
         handles = [
             mpatches.Patch(facecolor=_tint(focus_color), edgecolor=focus_color,
-                           linewidth=1.2, label="focus cluster"),
-            mpatches.Patch(facecolor=_tint(source_color), edgecolor=source_color,
-                           linewidth=1.2, label="sources (orders come from)"),
-            mpatches.Patch(facecolor=_tint(drop_color), edgecolor=drop_color,
-                           linewidth=1.2, label="drops (orders go to)"),
+                           linewidth=1.2, label=focus_text),
         ]
+        sides = {d.get("side") for _, d in sub.nodes(data=True)}
+        if "source" in sides:
+            handles.append(mpatches.Patch(facecolor=_tint(source_color),
+                                          edgecolor=source_color, linewidth=1.2,
+                                          label=source_text))
+        if "drop" in sides:
+            handles.append(mpatches.Patch(facecolor=_tint(drop_color),
+                                          edgecolor=drop_color, linewidth=1.2,
+                                          label=drop_text))
         if include_cross_edges:
             handles.append(mpatches.Patch(facecolor=_tint(cross_color),
                                           edgecolor=cross_color, linewidth=1.2,
@@ -483,14 +528,105 @@ def plot_flow(
         shown = [m for m in dict.fromkeys(node_metric_names + edge_metric_names) if m != metric]
         if shown:
             bits.append("showing " + ", ".join(shown))
+        if sub.graph.get("rank_by") == "node":
+            bits[1] = f"top clusters by {metric}"
         if sub.graph["grain"]:
             bits.append(", ".join(f"{k}={v}" for k, v in sub.graph["grain"].items()))
+        applied = {**sub.graph.get("edge_filter", {}), **sub.graph.get("node_filter", {})}
+        if applied:
+            bits.append("filtered on " + ", ".join(applied))
         title = "  |  ".join(bits)
     ax.set_title(title, fontsize=12, fontweight="bold", color=INK, pad=20)
     ax.margins(x=0.14, y=0.18)
     ax.axis("off")
     fig.tight_layout(rect=(0, 0.04, 1, 1) if legend else None)
     return fig
+
+
+def plot_reach(
+    graph,
+    start,
+    direction: str = "in",
+    budget=None,
+    cost: str | None = None,
+    max_hops: int = 3,
+    min_hops: int = 1,
+    edge_filter=None,
+    node_filter=None,
+    node_metrics=None,
+    edge_metrics=None,
+    size_metric: str | None = None,
+    title: str | None = None,
+    **kwargs,
+):
+    """Draw everything within reach of ``start``, laid out by hop count.
+
+    ``direction="in"`` shows the clusters that can reach it (they sit on the
+    left, in travel order); ``"out"`` shows the clusters it can reach. ``cost``
+    is accumulated along each path and capped by ``budget``, so
+
+        graph.plot_reach("A1", budget=120)
+
+    reads as *everywhere that reaches A1 within two hours*, when durations are
+    minutes. Each column is a hop band, and the node table carries the total
+    cost of getting there rather than the cluster's own metrics.
+    """
+    cost = cost or graph.schema.ride_time_metric
+    grain = {k: v for k, v in kwargs.items() if k in graph.schema.grain_names}
+
+    tree = graph.reach_subgraph(start, direction=direction, budget=budget, cost=cost,
+                                max_hops=max_hops, min_hops=min_hops,
+                                edge_filter=edge_filter, node_filter=node_filter,
+                                **grain)
+    if tree.number_of_edges() == 0:
+        import warnings
+
+        warnings.warn(
+            f"Nothing is within reach of {start!r} under those constraints; "
+            "raise budget or max_hops.",
+            stacklevel=2,
+        )
+
+    shown = _metric_list(node_metrics) or [cost, "hops"]
+    # columns already say how far, so size is free to say how big
+    size_metric = size_metric or graph.schema.default_metric
+    kwargs.setdefault("value_format", {cost: "{:,.1f}", "hops": "{:,.0f}"})
+    # the totals are per path, so they come off the tree, not off the clusters
+    totals = {
+        node: {cost: data.get("cost", 0.0), "hops": float(data.get("hops", 0))}
+        for node, data in tree.nodes(data=True)
+    }
+    inward = tree.graph["direction"] == "in"
+
+    def band(level):
+        if level == 0:
+            return "START"
+        hops = abs(level)
+        return f"{hops} HOP" if hops == 1 else f"{hops} HOPS"
+
+    if title is None:
+        verb = "reaching" if inward else "reachable from"
+        bits = [f"Clusters {verb} {start}"]
+        bits.append(f"{cost} within {budget:,.0f}" if budget is not None else f"by {cost}")
+        bits.append(f"up to {max_hops} hops")
+        if grain:
+            bits.append(", ".join(f"{k}={v}" for k, v in grain.items()))
+        title = "  |  ".join(bits)
+
+    return plot_flow(
+        graph,
+        start,
+        subgraph=tree,
+        metric=cost,
+        node_metrics=shown,
+        edge_metrics=_metric_list(edge_metrics) or [cost],
+        node_values=totals,
+        size_metric=size_metric,
+        level_label=band,
+        legend_labels=(f"{start} (start)", "can reach it", "reachable from it"),
+        title=title,
+        **kwargs,
+    )
 
 
 def plot_partners(
@@ -683,6 +819,7 @@ def plot_route_graph(
     metric: str | None = None,
     layout: str = "circular",
     top_routes: int | None = None,
+    node_direction: str = "out",
     figsize: tuple[float, float] = (14, 10),
     node_size: tuple[float, float] = (300.0, 2200.0),
     edge_width: tuple[float, float] = (0.6, 5.0),
@@ -714,7 +851,8 @@ def plot_route_graph(
         simple = keep
 
     nodes = list(simple.nodes)
-    node_values = [graph.node_value(n, metric=metric, direction="both", **grain_values)
+    node_values = [graph.node_value(n, metric=metric, direction=node_direction,
+                                    **grain_values)
                    if metric != "count" else float(simple.degree(n)) for n in nodes]
 
     if layout == "geo":

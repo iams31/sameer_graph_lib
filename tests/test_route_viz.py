@@ -38,7 +38,7 @@ def make_frame():
 
 @pytest.fixture
 def graph():
-    return RouteGraph.from_dataframe(make_frame())
+    return RouteGraph.from_dataframe(make_frame(), grain_cols=("week_period", "hour"))
 
 
 def close(fig):
@@ -104,7 +104,7 @@ def test_other_route_plots(graph):
 
 
 def test_explorer_plots_inherit_metric_and_grain(tmp_path):
-    explorer = RouteExplorer(make_frame()).where(hour=[8, 9]).using("speed")
+    explorer = RouteExplorer(make_frame(), grain_cols=("week_period", "hour")).where(hour=[8, 9]).using("speed")
     fig = explorer.plot("A1", upstream=2, downstream=2)
     assert "speed" in fig.axes[0].get_title()
     path = explorer.save(fig, tmp_path / "flow.png")
@@ -117,7 +117,7 @@ def test_explorer_plots_inherit_metric_and_grain(tmp_path):
 
 def test_explorer_dataframe_plots():
     pytest.importorskip("xarray")
-    explorer = RouteExplorer(make_frame())
+    explorer = RouteExplorer(make_frame(), grain_cols=("week_period", "hour"))
     close(explorer.plot_columns(["orders", "speed"], x="hour",
                                 group="week_period", agg="mean"))
     close(explorer.plot_distribution("speed"))
@@ -222,3 +222,59 @@ def test_figure_grows_with_the_tables(graph):
 
     assert graph.plot_flow("A1", figsize=(9, 6)).get_size_inches().tolist() == [9, 6]
     plt.close("all")
+
+
+def test_plot_accepts_filters(graph):
+    cutoff = float(np.median([graph.edge_value(u, v, "speed") for u, v in graph.routes()]))
+    fig = graph.plot_flow("A1", upstream=3, downstream=3,
+                          edge_filter={"speed": (">", cutoff)})
+    assert "filtered on speed" in fig.axes[0].get_title()
+    plt.close(fig)
+
+    fig = graph.plot_flow("A1", upstream=3, downstream=3, node_filter={"orders": 100})
+    assert "filtered on orders" in fig.axes[0].get_title()
+    plt.close(fig)
+
+
+def test_plot_warns_when_a_filter_leaves_nothing(graph):
+    with pytest.warns(UserWarning, match="No routes survived"):
+        fig = graph.plot_flow("A1", upstream=2, downstream=2,
+                              edge_filter={"orders": 10 ** 9})
+    assert len(fig.axes[0].collections) >= 1          # the focus is still drawn
+    plt.close(fig)
+
+
+def test_explorer_plot_forwards_filters():
+    explorer = RouteExplorer(make_frame(), grain_cols=("week_period", "hour"))
+    cutoff = float(np.median([explorer.value(u, v, "speed") for u, v in explorer.routes]))
+    close(explorer.plot("A1", upstream=2, downstream=2,
+                        edge_filter={"speed": (">", cutoff)},
+                        node_metrics=["orders", "speed"]))
+    close(explorer.keep(edge_filter={"speed": (">", cutoff)}).plot("A1"))
+
+
+def test_node_tables_show_what_the_cluster_sends(graph):
+    """The node number is the cluster as a pickup: the orders it sends out."""
+    fig = graph.plot_flow("A1", upstream=2, downstream=2, node_metrics=["orders"])
+    tables = [t.get_text() for t in fig.axes[0].texts]
+    expected = f"{graph.node_value('A1', 'orders', 'out'):,.0f}"
+    assert any(expected in text for text in tables)
+    # and not the inbound or the combined figure, which differ here
+    assert graph.node_value("A1", "orders", "out") != graph.node_value("A1", "orders", "both")
+    plt.close(fig)
+
+
+def test_node_direction_is_selectable(graph):
+    for direction in ("in", "out", "both"):
+        fig = graph.plot_flow("A1", upstream=2, downstream=2,
+                              node_metrics=["orders"], node_direction=direction)
+        wanted = f"{graph.node_value('A1', 'orders', direction):,.0f}"
+        assert any(wanted in t.get_text() for t in fig.axes[0].texts), direction
+        plt.close(fig)
+    with pytest.raises(ValueError, match="node_direction"):
+        graph.plot_flow("A1", node_direction="sideways")
+
+
+def test_the_ring_view_measures_the_same_way(graph):
+    for direction in ("in", "out", "both"):
+        close(graph.plot_graph(node_direction=direction))

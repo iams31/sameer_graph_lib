@@ -17,6 +17,7 @@ without it::
 
 from __future__ import annotations
 
+import operator
 import warnings
 from collections import Counter
 from dataclasses import dataclass, field
@@ -58,10 +59,102 @@ ID_COLS = ("pickup_cluster", "drop_cluster", "city")
 MEAN_HINTS = ("avg", "mean", "median", "rate", "ratio", "pct", "percent",
               "share", "score", "index", "per_")
 
+#: Whole words that mark a numeric column as a bucket rather than a measurement.
+#: Only these are kept out of the metrics - a count column with few distinct
+#: values (cancelled 0-11, riders 1-30) is still a measurement and stays.
+DIMENSION_WORDS = frozenset({
+    "hour", "hours", "hr", "hrs", "day", "days", "dow", "weekday", "week",
+    "weeks", "month", "months", "quarter", "year", "years", "date", "datetime",
+    "slot", "slots", "timeslot", "period", "bucket", "bin", "band", "tier",
+    "cohort", "variant", "arm", "segment", "shift", "wave",
+})
+
+
+def _words(name) -> list:
+    """Split a column name into its words: ``avg_ride_time`` -> avg, ride, time."""
+    import re
+
+    return [part for part in re.split(r"[^a-z0-9]+", str(name).lower()) if part]
+
+
+def looks_like_dimension(name) -> bool:
+    """Whether a column name denotes a bucket you slice by, not a measurement."""
+    return any(word in DIMENSION_WORDS for word in _words(name))
+
+#: Bucket used when the data has no grain dimension of its own.
+FLAT_GRAIN = "__all__"
+
 ROWS = "__rows"
 
 #: Metric aliases that resolve against the schema instead of a column name.
 DERIVED_METRICS = ("length", "ride_time", "speed", "row_count", "count")
+
+
+#: Operators a filter test can use.
+COMPARISONS = {
+    ">": operator.gt, "gt": operator.gt,
+    ">=": operator.ge, "ge": operator.ge, "min": operator.ge,
+    "<": operator.lt, "lt": operator.lt,
+    "<=": operator.le, "le": operator.le, "max": operator.le,
+    "==": operator.eq, "eq": operator.eq,
+    "!=": operator.ne, "ne": operator.ne,
+}
+
+
+def _as_test(spec):
+    """Turn a filter value into a predicate on one metric value.
+
+    ``100`` means ``>= 100``, ``(">", 0.25)`` names an operator, and
+    ``(10, 50)`` is an inclusive range. A NaN metric never passes.
+    """
+    if isinstance(spec, (tuple, list)):
+        if len(spec) != 2:
+            raise ValueError(f"A filter test needs 2 items, got {spec!r}")
+        first, second = spec
+        if isinstance(first, str):
+            try:
+                compare = COMPARISONS[first]
+            except KeyError:
+                raise ValueError(
+                    f"Unknown operator {first!r}; use one of {sorted(COMPARISONS)}"
+                ) from None
+            return lambda value: bool(not np.isnan(value) and compare(value, second))
+        low, high = float(first), float(second)
+        return lambda value: bool(not np.isnan(value) and low <= value <= high)
+
+    threshold = float(spec)
+    return lambda value: bool(not np.isnan(value) and value >= threshold)
+
+
+def suggest_grains(df, max_levels: int = 48, exclude=()) -> list:
+    """Columns that look like grain dimensions: few repeated values.
+
+    A grain is something you slice by - a day part, an hour, a segment - so the
+    test is a small number of distinct values relative to the frame.
+    """
+    skip = set(exclude) | set(ID_COLS)
+    out = []
+    for column in df.columns:
+        if column in skip:
+            continue
+        series = df[column].dropna()
+        if series.empty:
+            continue
+        levels = series.nunique()
+        if levels <= 1 or levels > max_levels or levels >= len(series):
+            continue
+        if pd.api.types.is_float_dtype(series):
+            continue                                  # measurements, not buckets
+        out.append(column)
+    return out
+
+
+def suggest_ids(df, exclude=()) -> list:
+    """Columns that look like cluster or entity ids rather than measurements."""
+    skip = set(exclude)
+    hints = ("cluster", "hex", "id", "zone", "cell", "node", "region")
+    return [c for c in df.columns
+            if c not in skip and any(h in str(c).lower() for h in hints)]
 
 
 def classify_metrics(df, exclude=()) -> tuple[list, list]:
@@ -126,25 +219,68 @@ class RouteSchema:
                 raise ValueError(f"{m!r} must be one of mean_metrics")
 
     @classmethod
-    def from_frame(cls, df, grain_cols=("week_period", "hour"), exclude_cols=(), **kwargs):
+    def from_frame(cls, df, grain_cols=(), exclude_cols=(), metrics=None, **kwargs):
         """Infer the grains and the metric columns from a DataFrame.
 
-        Every numeric column that is not a grain, an id or excluded becomes a
-        metric, classified by :func:`classify_metrics`. Pass ``sum_metrics`` /
-        ``mean_metrics`` explicitly to override the split.
+        Your column names are your own, so name them:
+
+            RouteSchema.from_frame(df, grain_cols=("day_part", "hour_of_day"),
+                                   metrics=["trips", "gmv", "avg_km"])
+
+        Grains are optional. Pass none and the whole frame collapses into a
+        single bucket; pass any columns you want to slice by, including a
+        cohort column such as ``variant`` holding test and control.
+
+        With ``metrics=None`` every numeric column becomes a metric except
+        grains, ids, exclusions, and columns whose name denotes a bucket
+        (``hour``, ``week``, ``slot``, ...). Integer counts are kept: few
+        distinct values does not make a column a dimension. Name them with
+        ``metrics=`` when the guess is wrong, or set the split yourself with
+        ``sum_metrics`` / ``mean_metrics``.
         """
+        grain_cols = tuple(grain_cols or ())
+        if not grain_cols:
+            grain_cols = (FLAT_GRAIN,)
+            df = df.assign(**{FLAT_GRAIN: "all"})
         grains = {}
         for col in grain_cols:
             if col not in df:
-                raise KeyError(f"Grain column {col!r} is not in the frame")
+                raise KeyError(
+                    f"Grain column {col!r} is not in the frame. "
+                    f"Pass grain_cols= with your own column names; "
+                    f"candidates here: {suggest_grains(df)}"
+                )
             if col == "hour":
                 hours = pd.to_numeric(df[col], errors="coerce").dropna().astype(int)
                 grains[col] = sorted(set(range(24)) | set(hours))
             else:
-                grains[col] = sorted(df[col].dropna().unique().tolist())
+                # plain Python values, so repr and JSON stay readable
+                levels = [v.item() if hasattr(v, "item") else v
+                          for v in df[col].dropna().unique().tolist()]
+                grains[col] = sorted(levels)
 
-        skip = set(grain_cols) | set(exclude_cols) | set(CATEGORICAL) | set(ID_COLS)
-        inferred_sums, inferred_means = classify_metrics(df, exclude=skip)
+        if metrics is not None:
+            chosen = list(metrics)
+            if not chosen:
+                raise ValueError("metrics= is empty; pass at least one column")
+            absent = [m for m in chosen if m not in df.columns]
+            if absent:
+                raise KeyError(f"Metric column(s) not in the frame: {absent}")
+            inferred_sums, inferred_means = classify_metrics(df[chosen])
+            unusable = [m for m in chosen if m not in inferred_sums + inferred_means]
+            if unusable:
+                raise TypeError(
+                    f"Metric column(s) are not numeric and cannot be measured: {unusable}"
+                )
+        else:
+            skip = set(grain_cols) | set(exclude_cols) | set(CATEGORICAL) | set(ID_COLS)
+            # summing `hour` is meaningless, so columns whose name denotes a
+            # bucket stay out of the metrics even when they are not grains.
+            # This is deliberately name-based: an integer column with few
+            # distinct values is usually still a count, and counts are metrics.
+            skip |= {c for c in df.columns if looks_like_dimension(c)}
+            inferred_sums, inferred_means = classify_metrics(df, exclude=skip)
+
         kwargs.setdefault("sum_metrics", inferred_sums)
         mean = list(kwargs.get("mean_metrics", inferred_means))
         # the length and ride-time metrics stay in the schema even when the
@@ -164,6 +300,17 @@ class RouteSchema:
     @property
     def shape(self):
         return tuple(len(v) for v in self.grains.values())
+
+    @property
+    def is_flat(self) -> bool:
+        """True when the schema has no real grain, just one bucket."""
+        return self.grain_names == [FLAT_GRAIN]
+
+    def ensure_grain(self, df):
+        """Add the flat bucket column when the schema has no real grain."""
+        if self.is_flat and FLAT_GRAIN not in df.columns:
+            return df.assign(**{FLAT_GRAIN: "all"})
+        return df
 
     @property
     def default_metric(self) -> str:
@@ -401,18 +548,36 @@ class RouteGraph:
                 self.add_route(pickup, drop, tensor)
 
     # ---------------- construction ---------------- #
+    #: Keyword arguments that belong to the schema rather than the graph.
+    SCHEMA_OPTIONS = ("metrics", "sum_metrics", "mean_metrics", "weight_col",
+                      "length_metric", "ride_time_metric", "speed_scale", "exclude_cols")
+
     @classmethod
     def from_dataframe(cls, df, schema=None, pickup_col="pickup_cluster",
-                       drop_col="drop_cluster", grain_cols=("week_period", "hour"),
-                       **graph_kwargs):
-        schema = schema or RouteSchema.from_frame(
-            df, grain_cols=grain_cols, exclude_cols=(pickup_col, drop_col))
-        g = cls(schema, **graph_kwargs)
+                       drop_col="drop_cluster", grain_cols=(), **kwargs):
+        """Build the schema, the tensors and the graph from one frame.
+
+        ``grain_cols`` is optional: pass none and everything collapses into one
+        bucket, or name the columns you want to slice by. Schema options
+        (``metrics``, ``weight_col``, ``length_metric``, ...) may be passed
+        straight through, alongside graph options such as ``directed``.
+        """
+        schema_kwargs = {k: kwargs.pop(k) for k in list(kwargs)
+                         if k in cls.SCHEMA_OPTIONS}
+        if schema is not None and schema_kwargs:
+            raise TypeError(
+                f"Pass either schema= or schema options, not both: "
+                f"{sorted(schema_kwargs)}"
+            )
+        schema_kwargs.setdefault("exclude_cols", (pickup_col, drop_col))
+        schema = schema or RouteSchema.from_frame(df, grain_cols=grain_cols,
+                                                  **schema_kwargs)
+        g = cls(schema, **kwargs)
         g.add_frame(df, pickup_col=pickup_col, drop_col=drop_col)
         return g
 
     def add_frame(self, df, pickup_col="pickup_cluster", drop_col="drop_cluster"):
-        df = df.dropna(subset=[pickup_col, drop_col])
+        df = self.schema.ensure_grain(df.dropna(subset=[pickup_col, drop_col]))
         for (pickup, drop), grp in df.groupby([pickup_col, drop_col], sort=False):
             attrs = {}
             if "city" in grp:
@@ -564,14 +729,28 @@ class RouteGraph:
         df = self.as_dataset().to_dataframe().reset_index()
         return df[df["row_count"] > 0].reset_index(drop=True) if drop_empty else df
 
-    def edges_frame(self):
-        """One row per route with its collapsed metrics and length."""
+    def edges_frame(self, metrics=None, **grain_values):
+        """One row per route.
+
+        ``metrics`` picks which columns to put on each edge; the default is
+        every metric the schema carries. Grain filters narrow the window::
+
+            graph.edges_frame(metrics=["orders", "speed"], hour=[8, 9])
+        """
+        wanted = [self.schema.validate_metric(m) for m in metrics] if metrics else None
         rows = []
         for u, v, d in self.graph.edges(data=True):
-            rows.append({"pickup_cluster": u, "drop_cluster": v,
-                         "length": d["length"], "ride_time": d["ride_time"],
-                         "speed": d["speed"], "count": d["count"],
-                         "coverage": d["tensor"].coverage, **d["tensor"].summary()})
+            summary = (d["tensor"].summary(**grain_values) if grain_values
+                       else (d.get("metrics") or d["tensor"].summary()))
+            row = {"pickup_cluster": u, "drop_cluster": v,
+                   "count": d["count"], "coverage": d["tensor"].coverage}
+            if wanted is None:
+                row.update({"length": d["length"], "ride_time": d["ride_time"],
+                            "speed": d["speed"]})
+                row.update(summary)
+            else:
+                row.update({m: summary[m] for m in wanted})
+            rows.append(row)
         return pd.DataFrame(rows)
 
     # ---------------- metric access ---------------- #
@@ -628,19 +807,36 @@ class RouteGraph:
             raise ValueError(f"direction must be 'in', 'out' or 'both', got {direction!r}")
 
     def partners(self, node, direction="out", metric=None, top=None,
-                 min_value=None, exclude=None, ascending=False, **grain_values):
+                 min_value=None, exclude=None, ascending=False, rank_by="edge",
+                 node_direction="both", **grain_values):
         """Ranked neighbours of a node as ``[(partner, value), ...]``.
 
         ``direction='in'`` answers *where do this cluster's orders come from*,
         ``direction='out'`` answers *where do they go*.
+
+        ``rank_by`` decides what the ranking measures:
+
+        * ``"edge"`` (default) - the metric on the route between the two, so
+          the top 5 are the five biggest routes into this cluster.
+        * ``"node"`` - the metric on the partner cluster itself, so the top 5
+          are the five biggest clusters that feed it, however small the route
+          between them happens to be.
+
+        ``node_direction`` picks which side of the partner is measured when
+        ranking by node: ``"both"``, ``"in"`` or ``"out"``.
         """
         metric = self.resolve_metric(metric)
+        if rank_by not in ("edge", "node"):
+            raise ValueError("rank_by must be 'edge' or 'node'")
         skip = set(exclude or ())
         rows = []
         for partner, _, _, data in self.incident(node, direction):
             if partner in skip:
                 continue
-            value = self._value_from_edge(data, metric, grain_values)
+            value = (self._value_from_edge(data, metric, grain_values)
+                     if rank_by == "edge"
+                     else self.node_value(partner, metric=metric,
+                                          direction=node_direction, **grain_values))
             if min_value is not None and not (value >= min_value):
                 continue
             rows.append((partner, value))
@@ -649,21 +845,38 @@ class RouteGraph:
         rows.sort(key=lambda item: miss if np.isnan(item[1]) else item[1], reverse=not ascending)
         return rows[:top] if top else rows
 
-    def top_drops(self, node, top=5, metric=None, **kwargs):
-        """Top clusters this cluster sends orders to."""
-        metric = self.resolve_metric(metric)
-        return self.partners(node, direction="out", metric=metric, top=top, **kwargs)
+    def top_drops(self, node, top=5, metric=None, rank_by="edge", **kwargs):
+        """Top clusters this cluster sends orders to.
 
-    def top_sources(self, node, top=5, metric=None, **kwargs):
-        """Top clusters this cluster receives orders from."""
+        ``rank_by="node"`` ranks them by their own volume instead of by the
+        route from here.
+        """
         metric = self.resolve_metric(metric)
-        return self.partners(node, direction="in", metric=metric, top=top, **kwargs)
+        return self.partners(node, direction="out", metric=metric, top=top,
+                             rank_by=rank_by, **kwargs)
+
+    def top_sources(self, node, top=5, metric=None, rank_by="edge", **kwargs):
+        """Top clusters this cluster receives orders from.
+
+        ``rank_by="node"`` ranks them by their own volume instead of by the
+        route into here.
+        """
+        metric = self.resolve_metric(metric)
+        return self.partners(node, direction="in", metric=metric, top=top,
+                             rank_by=rank_by, **kwargs)
 
     def partners_frame(self, node, direction="out", metric=None, top=None,
-                       extra_metrics=(), **grain_values):
-        """Ranked partners as a DataFrame, with a share-of-total column."""
+                       extra_metrics=(), rank_by="edge", node_direction="both",
+                       **grain_values):
+        """Ranked partners as a DataFrame, with a share-of-total column.
+
+        ``rank_by="node"`` ranks by the partner cluster's own total rather than
+        by the route between them.
+        """
         metric = self.resolve_metric(metric)
-        ranked = self.partners(node, direction=direction, metric=metric, top=top, **grain_values)
+        ranked = self.partners(node, direction=direction, metric=metric, top=top,
+                               rank_by=rank_by, node_direction=node_direction,
+                               **grain_values)
         total = float(np.nansum([v for _, v in ranked])) if ranked else 0.0
         rows = []
         for rank, (partner, value) in enumerate(ranked, start=1):
@@ -672,6 +885,7 @@ class RouteGraph:
                 "cluster": node,
                 "partner": partner,
                 "direction": direction,
+                "ranked_by": rank_by,
                 metric: value,
                 "share": (value / total) if total else np.nan,
             }
@@ -720,6 +934,98 @@ class RouteGraph:
             })
         frame = pd.DataFrame(rows)
         return frame.sort_values(f"out_{metric}", ascending=False, ignore_index=True) if rows else frame
+
+    def node_split(self, node, *, metrics=None, diff=None, diff_order="out-in",
+                   **grain_values) -> dict:
+        """Every chosen metric for one cluster, inbound and outbound side by side.
+
+        Sums are summed and means are weighted-averaged, both from the same
+        tensors the routes carry - so the inbound average is weighted by
+        :attr:`RouteSchema.weight_col` across the inbound routes, not a plain
+        average of their averages.
+
+            graph.node_split("A1")                       # every metric, no diff
+            graph.node_split("A1", metrics=["orders"], diff=True)
+            {"orders": {"in": 30.0, "out": 30.0, "diff": 0.0}}
+
+        Everything past the cluster is optional: ``metrics`` defaults to every
+        metric the schema carries, ``diff`` picks which of them also get the
+        difference (``True`` for all, or a list of names), and ``diff_order``
+        flips which way it is taken.
+        """
+        if diff_order not in ("out-in", "in-out"):
+            raise ValueError("diff_order must be 'out-in' or 'in-out'")
+        wanted = [self.schema.validate_metric(m)
+                  for m in (metrics or self.schema.metric_names)]
+        if diff is True or diff == "all":
+            differenced = set(wanted)
+        elif diff:
+            differenced = {self.schema.validate_metric(m) for m in diff}
+        else:
+            differenced = set()
+
+        inbound = self.node_summary(node, direction="in", **grain_values)
+        outbound = self.node_summary(node, direction="out", **grain_values)
+
+        out = {}
+        for metric in wanted:
+            entry = {"in": float(inbound[metric]), "out": float(outbound[metric])}
+            if metric in differenced:
+                first, second = ((entry["out"], entry["in"]) if diff_order == "out-in"
+                                 else (entry["in"], entry["out"]))
+                entry["diff"] = first - second
+            out[metric] = entry
+        return out
+
+    def node_metrics_frame(self, *, metrics=None, diff=None, diff_order="out-in",
+                           nodes=None, **grain_values):
+        """One row per cluster with ``in_``/``out_`` columns for each metric.
+
+        The companion of :meth:`node_split` across the whole graph. Called bare
+        it gives every metric for every cluster; every argument is optional::
+
+            graph.node_metrics_frame()
+            graph.node_metrics_frame(metrics=["orders", "requests"], diff=["orders"])
+
+        gives ``in_orders``, ``out_orders``, ``diff_orders``, ``in_requests``,
+        ``out_requests``, ``in_avg_distance``, ``out_avg_distance``. Sums are
+        summed, means are weighted by the schema's weight column, and a side
+        with no routes is NaN rather than zero.
+        """
+        wanted = [self.schema.validate_metric(m)
+                  for m in (metrics or self.schema.metric_names)]
+        clusters = list(nodes) if nodes is not None else list(self.graph.nodes)
+        rows = []
+        for cluster in clusters:
+            if cluster not in self.graph:
+                raise KeyError(f"Unknown cluster: {cluster!r}")
+            split = self.node_split(cluster, metrics=wanted, diff=diff,
+                                    diff_order=diff_order, **grain_values)
+            row = {"cluster": cluster,
+                   "in_routes": self.graph.in_degree(cluster)
+                   if self.graph.is_directed() else self.graph.degree(cluster),
+                   "out_routes": self.graph.out_degree(cluster)
+                   if self.graph.is_directed() else self.graph.degree(cluster)}
+            for metric in wanted:
+                row[f"in_{metric}"] = split[metric]["in"]
+                row[f"out_{metric}"] = split[metric]["out"]
+                if "diff" in split[metric]:
+                    row[f"diff_{metric}"] = split[metric]["diff"]
+            rows.append(row)
+
+        frame = pd.DataFrame(rows)
+        if frame.empty:
+            return frame
+        # sort by the headline metric when it is present, else the first asked for
+        lead = (self.schema.default_metric if self.schema.default_metric in wanted
+                else wanted[0])
+        return frame.sort_values(f"out_{lead}", ascending=False,
+                                 na_position="last", ignore_index=True)
+
+    @property
+    def weight_col(self):
+        """The column the mean metrics are weighted by, fixed when built."""
+        return self.schema.weight_col
 
     def rank_routes(self, metric=None, top=None, ascending=False, **grain_values):
         """Routes ranked by any metric, as a DataFrame."""
@@ -807,6 +1113,177 @@ class RouteGraph:
         out.route_count = out.graph.number_of_edges()
         return out
 
+
+    # ---------------- filtering ---------------- #
+    def edge_passes(self, pickup, drop, edge_filter, **grain_values) -> bool:
+        """Whether one route satisfies every test in ``edge_filter``."""
+        return self._passes(self._edge_data(pickup, drop), edge_filter, grain_values)
+
+    def _passes(self, data, spec, grain_values) -> bool:
+        for metric, test in (spec or {}).items():
+            if not _as_test(test)(self._value_from_edge(data, metric, grain_values)):
+                return False
+        return True
+
+    def _node_passes(self, node, spec, direction, grain_values) -> bool:
+        for metric, test in (spec or {}).items():
+            value = self.node_value(node, metric=metric, direction=direction, **grain_values)
+            if not _as_test(test)(value):
+                return False
+        return True
+
+    def matching_routes(self, edge_filter=None, node_filter=None,
+                        node_direction="both", **grain_values) -> list:
+        """``[(pickup, drop), ...]`` for the routes a filter accepts."""
+        clusters = None
+        if node_filter:
+            clusters = set(self.matching_clusters(node_filter, direction=node_direction,
+                                                  **grain_values))
+        out = []
+        for u, v, data in self.graph.edges(data=True):
+            if clusters is not None and (u not in clusters or v not in clusters):
+                continue
+            if self._passes(data, edge_filter, grain_values):
+                out.append((u, v))
+        return out
+
+    def matching_clusters(self, node_filter, direction="both", **grain_values) -> list:
+        """Clusters a node filter accepts."""
+        return [node for node in self.graph.nodes
+                if self._node_passes(node, node_filter, direction, grain_values)]
+
+    def keep(self, edge_filter=None, node_filter=None, node_direction="both",
+             drop_isolated=True, **grain_values) -> "RouteGraph":
+        """A NEW graph holding only what the filter accepts.
+
+        Tests are written as ``{metric: test}`` where a test is a number
+        (``>=``), a ``(operator, value)`` pair such as ``(">", 0.25)``, or a
+        ``(low, high)`` range. Several metrics are combined with AND, and a
+        metric that is NaN never passes.
+
+            fast = graph.keep(edge_filter={"speed": (">", 0.25)})
+            busy = graph.keep(node_filter={"orders": 5_000})
+            peak = graph.keep(edge_filter={"orders": 500}, hour=[8, 9, 10])
+
+        The original graph is untouched and tensors are shared, so this is
+        cheap. ``drop_isolated`` removes clusters left with no routes.
+        """
+        out = RouteGraph(self.schema, directed=self.graph.is_directed(),
+                         allow_self_loops=self.allow_self_loops)
+        out.graph = self.graph.copy()
+        out.insertion_log = list(self.insertion_log)
+        out._apply_filter(edge_filter, node_filter, "keep", node_direction,
+                          drop_isolated, grain_values)
+        return out
+
+    def cut(self, edge_filter=None, node_filter=None, node_direction="both",
+            drop_isolated=True, **grain_values) -> "RouteGraph":
+        """Remove what the filter MATCHES from this graph, in place.
+
+        The mirror of :meth:`keep`: ``keep`` says what to hold on to, ``cut``
+        says what to throw away.
+
+            graph.cut(edge_filter={"orders": ("<", 100)})   # drop thin routes
+            graph.cut(node_filter={"row_count": ("<", 5)})  # drop sparse clusters
+
+        Returns the same graph so calls can be chained.
+        """
+        self._apply_filter(edge_filter, node_filter, "cut", node_direction,
+                           drop_isolated, grain_values)
+        return self
+
+    def _apply_filter(self, edge_filter, node_filter, mode, node_direction,
+                      drop_isolated, grain_values):
+        if not edge_filter and not node_filter:
+            raise ValueError("Pass edge_filter=... and/or node_filter=...")
+        for spec in (edge_filter, node_filter):
+            for metric in (spec or {}):
+                if metric != "count":
+                    self.schema.validate_metric(metric)
+
+        graph = self.graph
+        before = (graph.number_of_nodes(), graph.number_of_edges())
+
+        if node_filter:
+            matched = set(self.matching_clusters(node_filter, direction=node_direction,
+                                                 **grain_values))
+            graph.remove_nodes_from(set(graph.nodes) - matched if mode == "keep" else matched)
+
+        if edge_filter:
+            matched = {(u, v) for u, v, data in graph.edges(data=True)
+                       if self._passes(data, edge_filter, grain_values)}
+            everything = set(graph.edges())
+            graph.remove_edges_from(everything - matched if mode == "keep" else matched)
+
+        if drop_isolated:
+            graph.remove_nodes_from([n for n in list(graph.nodes) if graph.degree(n) == 0])
+
+        self.route_count = graph.number_of_edges()
+        self.insertion_log.append({
+            "action": f"{mode}_filter",
+            "edge_filter": dict(edge_filter or {}),
+            "node_filter": dict(node_filter or {}),
+            "grain": dict(grain_values),
+            "clusters_removed": before[0] - graph.number_of_nodes(),
+            "routes_removed": before[1] - graph.number_of_edges(),
+        })
+
+    # ---------------- reachability ---------------- #
+    def reach_to(self, target, budget=None, cost=None, max_hops=3, metrics=(),
+                 **kwargs):
+        """Clusters that can REACH ``target``, cheapest qualifying path each.
+
+        The everyday question this answers is *where can orders come from and
+        still arrive within two hours*::
+
+            graph.reach_to("A1", budget=120)            # minutes, if that is your unit
+            graph.reach_to("A1", budget=120, max_hops=2, edge_filter={"orders": 100})
+
+        ``cost`` defaults to the schema ride-time metric and is summed along
+        the path. Returns a DataFrame with the cost, the hop count and the
+        route taken, cheapest first.
+        """
+        from .route_paths import reach_frame
+
+        return reach_frame(self, target, direction="in", cost=cost, budget=budget,
+                           max_hops=max_hops, metrics=metrics, **kwargs)
+
+    def reach_from(self, source, budget=None, cost=None, max_hops=3, metrics=(),
+                   **kwargs):
+        """Clusters reachable FROM ``source`` within the same constraints."""
+        from .route_paths import reach_frame
+
+        return reach_frame(self, source, direction="out", cost=cost, budget=budget,
+                           max_hops=max_hops, metrics=metrics, **kwargs)
+
+    def paths(self, source, target, budget=None, cost=None, max_hops=3,
+              metrics=(), **kwargs):
+        """Every qualifying route from ``source`` to ``target``, not just the best."""
+        from .route_paths import paths
+
+        return paths(self, source, target, cost=cost, budget=budget,
+                     max_hops=max_hops, metrics=metrics, **kwargs)
+
+    def path_total(self, path, metric=None, **grain_values) -> float:
+        """Sum one metric along a path, e.g. the total ride time of a route."""
+        from .route_paths import path_total
+
+        return path_total(self, path, self.resolve_metric(metric), **grain_values)
+
+    def reach_subgraph(self, start, direction="out", budget=None, cost=None,
+                       max_hops=3, **kwargs):
+        """The cheapest-path tree as a DiGraph, ready to plot."""
+        from .route_paths import reach_subgraph
+
+        return reach_subgraph(self, start, direction=direction, cost=cost,
+                              budget=budget, max_hops=max_hops, **kwargs)
+
+    def plot_reach(self, start, **kwargs):
+        """Draw the reachable set, laid out by hops from the start."""
+        from .route_viz import plot_reach
+
+        return plot_reach(self, start, **kwargs)
+
     # ---------------- flow expansion ---------------- #
     @staticmethod
     def _level_plan(spec) -> list:
@@ -834,7 +1311,8 @@ class RouteGraph:
 
     def flow_subgraph(self, focus, upstream=5, downstream=5, metric=None,
                       per_parent=True, min_value=None, include_cross_edges=False,
-                      exclude_self_loops=True, **grain_values):
+                      exclude_self_loops=True, edge_filter=None, node_filter=None,
+                      node_direction="both", rank_by="edge", **grain_values):
         """Expand around ``focus`` and keep only the top partners at each hop.
 
         ``upstream`` walks against the arrows (where orders come from) and
@@ -842,6 +1320,15 @@ class RouteGraph:
         for a single level or a list for one top-k per level, so
         ``upstream=[5, 3, 2]`` keeps the top 5 sources of the focus, the top 3
         sources of each of those, then the top 2 of each of those.
+
+        ``rank_by`` decides what the top-k measures at each hop: ``"edge"``
+        keeps the biggest routes, ``"node"`` keeps the biggest clusters.
+
+        ``edge_filter`` / ``node_filter`` apply :meth:`keep` before walking, so
+        the expansion never crosses a route that fails the filter and the
+        top-k at each hop is chosen from the survivors. This is a different
+        thing from the top-k itself: the filter is an absolute test on any
+        metric, the top-k is a ranking on one.
 
         Returns a ``nx.DiGraph`` whose nodes carry ``level`` (0 for focus,
         negative upstream, positive downstream) and whose edges carry ``value``.
@@ -852,6 +1339,18 @@ class RouteGraph:
         missing = [f for f in focus_nodes if f not in self.graph]
         if missing:
             raise KeyError(f"Unknown cluster(s): {missing}")
+
+        source = self
+        if edge_filter or node_filter:
+            source = self.keep(edge_filter=edge_filter, node_filter=node_filter,
+                               node_direction=node_direction, drop_isolated=False,
+                               **grain_values)
+            gone = [f for f in focus_nodes if f not in source.graph]
+            if gone:
+                raise ValueError(
+                    f"The filter removed the focus cluster(s) {gone}; "
+                    "loosen it or pick another focus"
+                )
 
         sub = nx.DiGraph()
         for node in focus_nodes:
@@ -866,15 +1365,17 @@ class RouteGraph:
                 picks = []
                 if per_parent:
                     for parent in frontier:
-                        picks += [(parent, p, v) for p, v in self.partners(
+                        picks += [(parent, p, v) for p, v in source.partners(
                             parent, direction=direction, metric=metric, top=keep,
-                            min_value=min_value, **grain_values)]
+                            min_value=min_value, rank_by=rank_by,
+                            node_direction=node_direction, **grain_values)]
                 else:
                     pool = []
                     for parent in frontier:
-                        pool += [(parent, p, v) for p, v in self.partners(
+                        pool += [(parent, p, v) for p, v in source.partners(
                             parent, direction=direction, metric=metric,
-                            min_value=min_value, **grain_values)]
+                            min_value=min_value, rank_by=rank_by,
+                            node_direction=node_direction, **grain_values)]
                     pool.sort(key=lambda item: -np.inf if np.isnan(item[2]) else item[2],
                               reverse=True)
                     picks = pool[:keep] if keep else pool
@@ -891,9 +1392,12 @@ class RouteGraph:
                         node = sub.nodes[partner]
                         node["value"] = float(np.nansum([node.get("value", 0.0), value]))
                     src, dst = (parent, partner) if sign > 0 else (partner, parent)
-                    sub.add_edge(src, dst, value=value, metric=metric,
+                    edge_value = (value if rank_by == "edge"
+                                  else source.edge_value(src, dst, metric, **grain_values))
+                    sub.add_edge(src, dst, value=edge_value, metric=metric,
+                                 rank_value=value,
                                  depth=hop, side=side,
-                                 routes=self.graph[src][dst].get("count", 1))
+                                 routes=source.graph[src][dst].get("count", 1))
                 frontier = next_frontier
 
         expand("in", self._level_plan(upstream), -1)
@@ -903,11 +1407,11 @@ class RouteGraph:
             selected = list(sub.nodes)
             for u in selected:
                 for v in selected:
-                    if u == v or sub.has_edge(u, v) or not self.graph.has_edge(u, v):
+                    if u == v or sub.has_edge(u, v) or not source.graph.has_edge(u, v):
                         continue
                     sub.add_edge(u, v, side="cross", depth=None, metric=metric,
-                                 value=self.edge_value(u, v, metric, **grain_values),
-                                 routes=self.graph[u][v].get("count", 1))
+                                 value=source.edge_value(u, v, metric, **grain_values),
+                                 routes=source.graph[u][v].get("count", 1))
 
         sub.graph.update({
             "focus": focus_nodes,
@@ -915,6 +1419,9 @@ class RouteGraph:
             "grain": dict(grain_values),
             "upstream": self._level_plan(upstream),
             "downstream": self._level_plan(downstream),
+            "edge_filter": dict(edge_filter or {}),
+            "node_filter": dict(node_filter or {}),
+            "rank_by": rank_by,
         })
         return sub
 
@@ -923,6 +1430,8 @@ class RouteGraph:
         grain = {k: v for k, v in kwargs.items() if k in self.schema.grain_names}
         options = {k: v for k, v in kwargs.items() if k not in grain}
         return grain, options
+
+    # ---------------- plotting ---------------- #
 
     def flow_frame(self, focus, upstream=5, downstream=5, metric=None,
                    extra_metrics=(), **kwargs):
@@ -987,7 +1496,6 @@ class RouteGraph:
                 walk(node, "drop", "  ", {node})
         return "\n".join(lines)
 
-    # ---------------- plotting ---------------- #
     def plot_flow(self, focus, **kwargs):
         """Draw the focus clusters with their top sources and drops per level."""
         from .route_viz import plot_flow
