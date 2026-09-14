@@ -4,6 +4,7 @@ pd = pytest.importorskip("pandas")
 np = pytest.importorskip("numpy")
 
 from sameer_graph_lib import RouteExplorer, RouteGraph, RouteSchema, RouteTensor
+from sameer_graph_lib.route_graph import looks_like_dimension
 
 
 def make_frame():
@@ -39,11 +40,11 @@ def make_frame():
 
 @pytest.fixture
 def graph():
-    return RouteGraph.from_dataframe(make_frame())
+    return RouteGraph.from_dataframe(make_frame(), grain_cols=("week_period", "hour"))
 
 
 def test_schema_infers_grains_and_metrics():
-    schema = RouteSchema.from_frame(make_frame())
+    schema = RouteSchema.from_frame(make_frame(), grain_cols=("week_period", "hour"))
     assert schema.grain_names == ["week_period", "hour"]
     assert len(schema.grains["hour"]) == 24          # hours always span the full day
     assert schema.shape == (2, 24)
@@ -54,7 +55,7 @@ def test_schema_infers_grains_and_metrics():
 
 def test_metrics_are_inferred_from_the_frame():
     frame = make_frame().rename(columns={"orders": "trips", "avg_distance": "avg_km"})
-    schema = RouteSchema.from_frame(frame, length_metric="avg_km",
+    schema = RouteSchema.from_frame(frame, grain_cols=("week_period", "hour"), length_metric="avg_km",
                                     ride_time_metric="avg_duration",
                                     weight_col="requests")
     # numeric columns become metrics; avg_/rate names are averaged, rest summed
@@ -71,7 +72,7 @@ def test_metrics_are_inferred_from_the_frame():
 
 
 def test_explicit_metric_lists_win_over_inference():
-    schema = RouteSchema.from_frame(make_frame(), sum_metrics=["orders"],
+    schema = RouteSchema.from_frame(make_frame(), grain_cols=("week_period", "hour"), sum_metrics=["orders"],
                                     mean_metrics=["avg_distance", "avg_duration"])
     assert schema.sum_metrics == ["orders"]
     assert schema.default_metric == "orders"
@@ -79,14 +80,14 @@ def test_explicit_metric_lists_win_over_inference():
 
 def test_schema_keeps_length_metrics_even_when_absent():
     frame = make_frame().drop(columns=["avg_distance"])
-    schema = RouteSchema.from_frame(frame)
+    schema = RouteSchema.from_frame(frame, grain_cols=("week_period", "hour"))
     tensor = RouteTensor.from_frame(schema, frame)
     assert np.isnan(tensor.summary()["speed"])       # no distance column, no speed
 
 
 def test_tensor_sums_and_weighted_means_are_exact():
     frame = make_frame()
-    schema = RouteSchema.from_frame(frame)
+    schema = RouteSchema.from_frame(frame, grain_cols=("week_period", "hour"))
     tensor = RouteTensor.from_frame(schema, frame)
     summary = tensor.summary()
 
@@ -100,7 +101,7 @@ def test_tensor_sums_and_weighted_means_are_exact():
 
 def test_tensor_merge_matches_single_pass():
     frame = make_frame()
-    schema = RouteSchema.from_frame(frame)
+    schema = RouteSchema.from_frame(frame, grain_cols=("week_period", "hour"))
     merged = RouteTensor.from_frame(schema, frame.iloc[:40]).merge(
         RouteTensor.from_frame(schema, frame.iloc[40:])
     )
@@ -222,7 +223,7 @@ def test_xarray_views_when_available(graph):
 
 
 def test_explorer_reads_like_a_sentence():
-    explorer = RouteExplorer(make_frame())
+    explorer = RouteExplorer(make_frame(), grain_cols=("week_period", "hour"))
     assert len(explorer) == explorer.graph.graph.number_of_nodes()
     assert "A1" in explorer and "ZZ" not in explorer
     assert explorer.drops("A1", top=1)["partner"].iloc[0] == "B3"
@@ -233,7 +234,7 @@ def test_explorer_reads_like_a_sentence():
 
 
 def test_explorer_views_are_sticky_but_isolated():
-    explorer = RouteExplorer(make_frame())
+    explorer = RouteExplorer(make_frame(), grain_cols=("week_period", "hour"))
     peak = explorer.where(hour=[8, 9]).using("speed")
     assert peak.metric == "speed"
     assert peak.grain == {"hour": [8, 9]}
@@ -244,3 +245,345 @@ def test_explorer_views_are_sticky_but_isolated():
     assert peak.drops("A1", top=1)[peak.metric].iloc[0] > 0
     with pytest.raises(KeyError):
         explorer.where(nope=1)
+
+
+def test_filter_tests_accept_numbers_operators_and_ranges(graph):
+    routes = graph.matching_routes(edge_filter={"orders": 400})
+    assert routes == graph.matching_routes(edge_filter={"orders": (">=", 400)})
+    assert set(graph.matching_routes(edge_filter={"orders": (">", 400)})) <= set(routes)
+
+    values = {(u, v): graph.edge_value(u, v, "orders") for u, v in graph.routes()}
+    banded = graph.matching_routes(edge_filter={"orders": (300, 600)})
+    assert all(300 <= values[route] <= 600 for route in banded)
+    assert set(banded) == {r for r, value in values.items() if 300 <= value <= 600}
+
+    # several metrics are combined with AND
+    both = graph.matching_routes(edge_filter={"orders": 300, "speed": (">", 0.2)})
+    assert all(values[r] >= 300 and graph.edge_value(*r, "speed") > 0.2 for r in both)
+
+
+def test_keep_returns_a_new_graph_and_leaves_the_original_alone(graph):
+    before = graph.graph.number_of_edges()
+    cutoff = float(np.median([graph.edge_value(u, v, "speed") for u, v in graph.routes()]))
+    fast = graph.keep(edge_filter={"speed": (">", cutoff)})
+    assert fast is not graph
+    assert graph.graph.number_of_edges() == before          # untouched
+    assert fast.graph.number_of_edges() < before
+    assert all(fast.edge_value(u, v, "speed") > cutoff for u, v in fast.routes())
+    # tensors are shared, so the numbers agree with the source graph
+    for u, v in fast.routes():
+        assert fast.edge_value(u, v, "orders") == graph.edge_value(u, v, "orders")
+
+
+def test_cut_is_in_place_and_the_mirror_of_keep():
+    frame = make_frame()
+    kept = RouteGraph.from_dataframe(frame, grain_cols=("week_period", "hour")).keep(edge_filter={"orders": (">=", 400)})
+    cut = RouteGraph.from_dataframe(frame, grain_cols=("week_period", "hour"))
+    result = cut.cut(edge_filter={"orders": ("<", 400)})
+    assert result is cut                                     # chainable, in place
+    assert sorted(cut.routes()) == sorted(kept.routes())
+
+
+def test_node_filter_drops_the_cluster_and_its_routes(graph):
+    threshold = 2000
+    busy = graph.keep(node_filter={"orders": threshold})
+    for cluster in busy.graph.nodes:
+        assert graph.node_value(cluster, "orders", "both") >= threshold
+    for u, v in busy.routes():
+        assert u in busy.graph and v in busy.graph
+    assert set(busy.graph.nodes) == set(graph.matching_clusters({"orders": threshold}))
+
+
+def test_filters_respect_the_grain(graph):
+    # the same test against a narrower window sees smaller totals, so fewer pass
+    busiest = max(graph.edge_value(u, v, "orders") for u, v in graph.routes())
+    everything = graph.matching_routes(edge_filter={"orders": busiest})
+    morning = graph.matching_routes(edge_filter={"orders": busiest}, hour=[8, 9])
+    assert len(everything) == 1
+    assert morning == []
+    assert graph.edge_value(*everything[0], "orders", hour=[8, 9]) < busiest
+
+
+def test_isolated_clusters_go_unless_asked_to_stay(graph):
+    tight = {"orders": graph.rank_routes(top=1)["orders"].iloc[0]}
+    pruned = graph.keep(edge_filter=tight)
+    assert all(pruned.graph.degree(n) > 0 for n in pruned.graph.nodes)
+    kept = graph.keep(edge_filter=tight, drop_isolated=False)
+    assert kept.graph.number_of_nodes() == graph.graph.number_of_nodes()
+
+
+def test_filter_rejects_nonsense(graph):
+    with pytest.raises(ValueError):
+        graph.keep()                                          # no filter at all
+    with pytest.raises(KeyError):
+        graph.keep(edge_filter={"not_a_metric": 1})
+    with pytest.raises(ValueError):
+        graph.keep(edge_filter={"orders": ("~", 1)})          # unknown operator
+    with pytest.raises(ValueError):
+        graph.keep(edge_filter={"orders": (1, 2, 3)})         # malformed test
+
+
+def test_nan_never_passes_a_filter():
+    frame = make_frame().drop(columns=["avg_distance"])       # speed becomes NaN
+    graph = RouteGraph.from_dataframe(frame, grain_cols=("week_period", "hour"))
+    assert np.isnan(graph.edge_value("A1", "B1", "speed"))
+    assert graph.matching_routes(edge_filter={"speed": (">", 0)}) == []
+    assert graph.matching_routes(edge_filter={"speed": ("<", 999)}) == []
+
+
+def test_filter_applies_before_the_expansion_walks(graph):
+    cutoff = float(np.median([graph.edge_value(u, v, "speed") for u, v in graph.routes()]))
+    slow = graph.keep(edge_filter={"speed": ("<=", cutoff)}).routes()
+    filtered = graph.flow_subgraph("A1", upstream=3, downstream=3,
+                                   edge_filter={"speed": (">", cutoff)})
+    for u, v in filtered.edges():
+        if filtered[u][v]["side"] != "cross":
+            assert (u, v) not in slow
+    # the top-k is then chosen from the survivors, not from everything
+    plain = graph.flow_subgraph("A1", upstream=3, downstream=3)
+    assert set(filtered.nodes) != set(plain.nodes)
+    assert filtered.graph["edge_filter"] == {"speed": (">", cutoff)}
+
+
+def test_filtering_away_the_focus_says_so(graph):
+    with pytest.raises(ValueError, match="removed the focus"):
+        graph.flow_subgraph("A1", node_filter={"orders": 10 ** 9})
+
+
+def test_explorer_keep_and_cut(graph):
+    explorer = RouteExplorer(make_frame(), grain_cols=("week_period", "hour"))
+    cutoff = float(np.median([explorer.value(u, v, "speed") for u, v in explorer.routes]))
+    fast = explorer.keep(edge_filter={"speed": (">", cutoff)})
+    assert fast.graph is not explorer.graph
+    assert len(fast.routes) < len(explorer.routes)
+    assert fast.metric == explorer.metric                     # the view keeps its defaults
+
+    peak = explorer.where(hour=[8, 9]).keep(edge_filter={"orders": 1000})
+    assert peak.grain == {"hour": [8, 9]}
+    assert len(peak.routes) <= len(explorer.routes)
+
+    trimmed = RouteExplorer(make_frame(), grain_cols=("week_period", "hour"))
+    assert trimmed.cut(edge_filter={"orders": ("<", 400)}) is trimmed
+    assert len(trimmed.routes) < len(explorer.routes)
+
+
+def make_lopsided_frame():
+    """B1 barely feeds A1 but is huge overall; B2 feeds A1 hard but is small."""
+    legs = {("B1", "A1"): 10, ("B1", "Z9"): 900, ("B2", "A1"): 300,
+            ("B2", "Z8"): 5, ("B3", "A1"): 200, ("B3", "Z7"): 100}
+    return pd.DataFrame([
+        {"pickup_cluster": s, "drop_cluster": d, "orders": float(v),
+         "requests": float(v * 2), "avg_distance": 5.0, "avg_duration": 20.0}
+        for (s, d), v in legs.items()
+    ])
+
+
+def test_grains_are_optional_and_can_be_anything():
+    frame = make_frame()
+    flat = RouteGraph.from_dataframe(frame)
+    assert flat.schema.is_flat                                # one bucket
+    assert flat.schema.grain_names == ["__all__"]
+    assert flat.edge_value("A1", "B1", "orders") == pytest.approx(
+        frame[(frame.pickup_cluster == "A1") & (frame.drop_cluster == "B1")]["orders"].sum())
+
+    # a cohort column is a perfectly good grain
+    frame = frame.assign(variant=["test" if i % 2 else "control" for i in range(len(frame))])
+    cohort = RouteGraph.from_dataframe(frame, grain_cols=("variant",))
+    assert cohort.schema.grains == {"variant": ["control", "test"]}
+    split = sum(cohort.edge_value("A1", "B1", "orders", variant=arm)
+                for arm in ("test", "control"))
+    assert split == pytest.approx(cohort.edge_value("A1", "B1", "orders"))
+
+
+def test_columns_named_for_a_bucket_do_not_become_metrics():
+    # summing `hour` is meaningless, so it stays out even when it is not a grain
+    graph = RouteGraph.from_dataframe(make_frame())
+    assert "hour" not in graph.schema.sum_metrics + graph.schema.mean_metrics
+    assert graph.schema.default_metric == "orders"
+    for name in ("hour", "day_of_week", "time_slot", "week_period", "cohort"):
+        assert looks_like_dimension(name), name
+
+
+def test_integer_counts_are_still_metrics():
+    """Few distinct values does not make a column a dimension.
+
+    A count like `cancelled` (0-11) or `riders` (1-30) is an integer with a
+    handful of levels, exactly like an hour column - but it is a measurement,
+    and dropping it would lose real data silently.
+    """
+    rng = np.random.default_rng(0)
+    frame = pd.DataFrame([{
+        "pickup_cluster": "A1", "drop_cluster": "B1",
+        "orders": float(rng.integers(50, 400)),
+        "cancelled": int(rng.integers(0, 12)),
+        "riders": int(rng.integers(1, 30)),
+        "avg_distance": 4.0, "avg_duration": 16.0,
+    } for _ in range(60)])
+    graph = RouteGraph.from_dataframe(frame)
+    assert {"cancelled", "riders"} <= set(graph.schema.sum_metrics)
+    assert graph.edge_value("A1", "B1", "cancelled") == pytest.approx(
+        frame["cancelled"].sum())
+    for name in ("cancelled", "riders", "orders", "supply_count"):
+        assert not looks_like_dimension(name), name
+
+
+def test_top_k_can_rank_on_the_edge_or_on_the_cluster():
+    graph = RouteGraph.from_dataframe(make_lopsided_frame())
+    by_route = [name for name, _ in graph.top_sources("A1", top=2)]
+    by_cluster = [name for name, _ in graph.top_sources("A1", top=2, rank_by="node")]
+    assert by_route == ["B2", "B3"]            # biggest routes into A1
+    assert by_cluster == ["B1", "B2"]          # biggest clusters that feed A1
+    assert graph.top_sources("A1", top=1, rank_by="node")[0][1] == pytest.approx(
+        graph.node_value("B1", "orders", "both"))
+    with pytest.raises(ValueError):
+        graph.partners("A1", rank_by="sideways")
+
+
+def test_the_expansion_honours_the_ranking_basis():
+    graph = RouteGraph.from_dataframe(make_lopsided_frame())
+    by_route = graph.flow_subgraph("A1", upstream=2, downstream=0)
+    by_cluster = graph.flow_subgraph("A1", upstream=2, downstream=0, rank_by="node")
+    assert sorted(n for n in by_route if n != "A1") == ["B2", "B3"]
+    assert sorted(n for n in by_cluster if n != "A1") == ["B1", "B2"]
+    assert by_cluster.graph["rank_by"] == "node"
+    # the edge still carries the route value, with the ranking value alongside
+    edge = by_cluster["B1"]["A1"]
+    assert edge["value"] == pytest.approx(graph.edge_value("B1", "A1", "orders"))
+    assert edge["rank_value"] == pytest.approx(graph.node_value("B1", "orders", "both"))
+
+
+def test_partners_frame_records_the_basis():
+    graph = RouteGraph.from_dataframe(make_lopsided_frame())
+    frame = graph.partners_frame("A1", direction="in", rank_by="node")
+    assert set(frame["ranked_by"]) == {"node"}
+    assert list(frame["partner"])[:2] == ["B1", "B2"]
+
+
+def test_edge_columns_can_be_chosen():
+    graph = RouteGraph.from_dataframe(make_frame(), grain_cols=("week_period", "hour"))
+    everything = graph.edges_frame()
+    assert {"orders", "requests", "speed", "avg_distance"} <= set(everything.columns)
+
+    chosen = graph.edges_frame(metrics=["orders", "speed"])
+    assert list(chosen.columns) == ["pickup_cluster", "drop_cluster", "count",
+                                    "coverage", "orders", "speed"]
+    windowed = graph.edges_frame(metrics=["orders"], hour=[8, 9])
+    assert (windowed["orders"] < chosen["orders"]).all()      # a narrower window
+    with pytest.raises(KeyError):
+        graph.edges_frame(metrics=["nope"])
+
+
+def make_weighted_frame():
+    """B feeds A lightly at 2km, C feeds A heavily at 4km; A sends out at 9km."""
+    return pd.DataFrame([
+        {"pickup_cluster": "B", "drop_cluster": "A", "orders": 10.0,
+         "requests": 100.0, "avg_distance": 2.0, "avg_duration": 10.0},
+        {"pickup_cluster": "C", "drop_cluster": "A", "orders": 20.0,
+         "requests": 300.0, "avg_distance": 4.0, "avg_duration": 10.0},
+        {"pickup_cluster": "A", "drop_cluster": "D", "orders": 30.0,
+         "requests": 100.0, "avg_distance": 9.0, "avg_duration": 10.0},
+    ])
+
+
+def test_node_split_holds_in_and_out_per_metric():
+    graph = RouteGraph.from_dataframe(make_weighted_frame(), weight_col="requests")
+    split = graph.node_split("A", metrics=["orders", "requests", "avg_distance"])
+    assert split["orders"] == {"in": 30.0, "out": 30.0}          # 10 + 20, and 30
+    assert split["requests"] == {"in": 400.0, "out": 100.0}
+    # the inbound average is weighted by requests, not a mean of the averages
+    assert split["avg_distance"]["in"] == pytest.approx((2 * 100 + 4 * 300) / 400)
+    assert split["avg_distance"]["in"] != pytest.approx((2 + 4) / 2)
+    assert split["avg_distance"]["out"] == pytest.approx(9.0)
+    assert "diff" not in split["orders"]                          # not asked for
+
+
+def test_the_weight_column_is_the_users_choice():
+    frame = make_weighted_frame()
+    by_requests = RouteGraph.from_dataframe(frame, weight_col="requests")
+    by_orders = RouteGraph.from_dataframe(frame, weight_col="orders")
+    assert by_requests.weight_col == "requests"
+    assert by_orders.weight_col == "orders"
+    assert by_requests.node_split("A", metrics=["avg_distance"])["avg_distance"]["in"] == (
+        pytest.approx((2 * 100 + 4 * 300) / 400))
+    assert by_orders.node_split("A", metrics=["avg_distance"])["avg_distance"]["in"] == (
+        pytest.approx((2 * 10 + 4 * 20) / 30))
+    # sums do not care which column weights the averages
+    assert by_requests.node_split("A", metrics=["orders"])["orders"] == (
+        by_orders.node_split("A", metrics=["orders"])["orders"])
+
+
+def test_differences_are_opt_in_per_metric():
+    graph = RouteGraph.from_dataframe(make_weighted_frame(), weight_col="requests")
+    chosen = graph.node_split("A", metrics=["orders", "requests", "avg_distance"],
+                              diff=["requests"])
+    assert "diff" in chosen["requests"] and "diff" not in chosen["orders"]
+    assert chosen["requests"]["diff"] == pytest.approx(100.0 - 400.0)
+
+    everything = graph.node_split("A", metrics=["orders", "requests"], diff=True)
+    assert all("diff" in entry for entry in everything.values())
+
+    flipped = graph.node_split("A", metrics=["requests"], diff=True,
+                               diff_order="in-out")["requests"]
+    assert flipped["diff"] == pytest.approx(400.0 - 100.0)
+    with pytest.raises(ValueError):
+        graph.node_split("A", metrics=["orders"], diff=True, diff_order="sideways")
+
+
+def test_node_metrics_frame_spreads_it_across_the_graph():
+    graph = RouteGraph.from_dataframe(make_weighted_frame(), weight_col="requests")
+    frame = graph.node_metrics_frame(metrics=["orders", "avg_distance"],
+                                     diff=["orders"])
+    assert set(frame.columns) == {"cluster", "in_routes", "out_routes",
+                                  "in_orders", "out_orders", "diff_orders",
+                                  "in_avg_distance", "out_avg_distance"}
+    row = frame[frame["cluster"] == "A"].iloc[0]
+    assert (row["in_orders"], row["out_orders"], row["diff_orders"]) == (30.0, 30.0, 0.0)
+    # a side with no routes is NaN, which is not the same as zero
+    source = frame[frame["cluster"] == "B"].iloc[0]
+    assert np.isnan(source["in_orders"]) and source["out_orders"] == 10.0
+    assert source["in_routes"] == 0
+
+    just_one = graph.node_metrics_frame(metrics=["orders"], nodes=["A"])
+    assert list(just_one["cluster"]) == ["A"]
+    with pytest.raises(KeyError):
+        graph.node_metrics_frame(nodes=["nope"])
+    with pytest.raises(KeyError):
+        graph.node_metrics_frame(metrics=["not_a_metric"])
+
+
+def test_node_split_respects_the_grain():
+    frame = make_frame()
+    graph = RouteGraph.from_dataframe(frame, grain_cols=("week_period", "hour"))
+    everything = graph.node_split("A1", metrics=["orders"])["orders"]
+    morning = graph.node_split("A1", metrics=["orders"], hour=[8, 9])["orders"]
+    assert morning["in"] < everything["in"]
+    assert morning["out"] < everything["out"]
+
+
+def test_explorer_exposes_the_same():
+    explorer = RouteExplorer(make_weighted_frame(), weight_col="requests")
+    assert explorer.weight_col == "requests"
+    assert explorer.node_split("A", metrics=["orders"])["orders"]["in"] == 30.0
+    frame = explorer.node_metrics_frame(metrics=["orders"], diff=True)
+    assert "diff_orders" in frame.columns
+
+
+def test_nothing_new_is_required():
+    """Every argument added for the node view is an optional keyword."""
+    graph = RouteGraph.from_dataframe(make_weighted_frame())
+
+    bare = graph.node_split("A")                       # cluster only
+    assert set(bare) == set(graph.schema.metric_names)
+    assert all(set(entry) == {"in", "out"} for entry in bare.values())
+
+    frame = graph.node_metrics_frame()                 # no arguments at all
+    assert len(frame) == graph.graph.number_of_nodes()
+    assert {"in_orders", "out_orders"} <= set(frame.columns)
+    assert not any(c.startswith("diff_") for c in frame.columns)
+    assert frame["out_orders"].iloc[0] == frame["out_orders"].max()   # sorted sensibly
+
+    # and they cannot be passed positionally by mistake
+    with pytest.raises(TypeError):
+        graph.node_split("A", ["orders"])
+    with pytest.raises(TypeError):
+        graph.node_metrics_frame(["orders"])
