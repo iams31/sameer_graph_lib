@@ -157,8 +157,9 @@ avg_duration     float64        833  metric (duration)
 ex = RouteExplorer.ask(df)     # prompts, with the proposal pre-filled
 ```
 
-It asks for the pickup and drop ids, the grain columns, the metric columns, and
-which two metrics are the distance and the duration that `speed` divides.
+It asks for the pickup and drop ids, the grain columns, the metric columns,
+**which of those are averages rather than totals**, the two metrics that
+`speed` divides, and the column the averages are weighted by.
 Answers can be column names or the numbers it lists; blank accepts the
 proposal and `none` clears it. Outside an interactive session the proposal is
 used unchanged, so scripts and saved notebooks still run.
@@ -179,7 +180,45 @@ ex = RouteExplorer(
 ```
 
 `metrics=` is a subset - only those columns are taken. Without it, every
-numeric column that is not a grain or an id becomes a metric. If you leave
+numeric column that is not a grain or an id becomes a metric.
+
+### Which metrics are summed, and which are averaged
+
+By default the split is **guessed from the column names**: anything containing
+`avg`, `mean`, `median`, `rate`, `ratio`, `pct`, `share`, `per_` (or ending in
+`%`) is weighted-averaged, and everything else is summed.
+
+That guess is worth checking, because a name often gives nothing away. `eta` and
+`fill` are averages, but neither name says so, and summing them is meaningless:
+
+```python
+ex = RouteExplorer(df, weight_col="trips")
+ex.value("A", "B", "eta")        # 36.0  - three rows of 12 added up. Wrong.
+```
+
+Say it outright and the guess is not used at all:
+
+```python
+ex = RouteExplorer(
+    df,
+    sum_metrics=["trips", "gmv"],          # added up
+    mean_metrics=["eta", "fill", "km"],    # weighted by weight_col
+    weight_col="trips",
+)
+ex.value("A", "B", "eta")        # 12.0  - the weighted average
+ex.value("A", "B", "gmv")        # 1500.0 - still summed
+```
+
+`preview()` shows which way each column is going before you build:
+
+```text
+column          dtype       levels  role
+trips           float64          1  metric (sum, weight)
+gmv             float64          1  metric (sum)
+km_per_trip     float64          1  metric (avg, distance)
+eta             float64          1  metric (avg, duration)
+fill            float64          1  metric (sum)          <- wrong, correct this
+``` If you leave
 `length_metric`/`ride_time_metric` unset on data that does not use the default
 names, `speed` is NaN rather than wrong.
 

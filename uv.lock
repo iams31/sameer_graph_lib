@@ -1935,7 +1935,7 @@ wheels = [
 
 [[package]]
 name = "sameer-graph-lib"
-version = "0.3.0"
+version = "0.4.1"
 source = { editable = "." }
 dependencies = [
     { name = "h3" },

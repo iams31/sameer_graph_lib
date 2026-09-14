@@ -77,13 +77,19 @@ def suggest_weight(candidates, weight_col=None):
 
 
 def suggest_columns(df, pickup_col=None, drop_col=None, grain_cols=None,
-                    metrics=None, length_metric=None, ride_time_metric=None,
+                    metrics=None, mean_metrics=None, sum_metrics=None,
+                    length_metric=None, ride_time_metric=None,
                     weight_col=None) -> dict:
     """Guess which columns are the ids, the grains and the metrics.
 
     Anything passed in is kept as given; the rest is inferred from the frame.
     Returns a dict with ``pickup_col``, ``drop_col``, ``grain_cols``,
-    ``metrics``, ``length_metric`` and ``ride_time_metric``.
+    ``metrics``, ``mean_metrics``, ``sum_metrics``, ``length_metric``,
+    ``ride_time_metric`` and ``weight_col``.
+
+    The sum/average split is a guess from the column names, which is exactly
+    the part worth checking: summing an ETA or a fill rate is meaningless, and
+    a name like ``eta`` gives nothing away.
     """
     columns = list(df.columns)
     ids = suggest_ids(df)
@@ -102,10 +108,19 @@ def suggest_columns(df, pickup_col=None, drop_col=None, grain_cols=None,
         skip = taken | set(grains)
         sums, means = classify_metrics(df, exclude=skip)
         chosen = sums + means
+    if mean_metrics is not None:
+        means = [m for m in mean_metrics if m in chosen]
+    elif sum_metrics is not None:
+        means = [m for m in chosen if m not in sum_metrics]
+    else:
+        _, guessed = classify_metrics(df[[c for c in chosen if c in df.columns]])
+        means = [m for m in chosen if m in guessed]
+    sums = [m for m in chosen if m not in means]
+
     length, duration = suggest_speed_pair(chosen, length_metric, ride_time_metric)
     return {"pickup_col": pickup, "drop_col": drop, "grain_cols": grains,
-            "metrics": chosen, "length_metric": length,
-            "ride_time_metric": duration,
+            "metrics": chosen, "mean_metrics": means, "sum_metrics": sums,
+            "length_metric": length, "ride_time_metric": duration,
             "weight_col": suggest_weight(chosen, weight_col)}
 
 
@@ -120,13 +135,14 @@ def describe_columns(df, **overrides) -> str:
     for column in proposal["grain_cols"]:
         roles[column] = "grain"
     for column in proposal["metrics"]:
-        roles[column] = "metric"
+        roles[column] = ("metric (avg)" if column in proposal["mean_metrics"]
+                         else "metric (sum)")
     if proposal["length_metric"]:
-        roles[proposal["length_metric"]] = "metric (distance)"
+        roles[proposal["length_metric"]] = "metric (avg, distance)"
     if proposal["ride_time_metric"]:
-        roles[proposal["ride_time_metric"]] = "metric (duration)"
+        roles[proposal["ride_time_metric"]] = "metric (avg, duration)"
     if proposal["weight_col"]:
-        roles[proposal["weight_col"]] = "metric (weight)"
+        roles[proposal["weight_col"]] = "metric (sum, weight)"
 
     width = max((len(str(c)) for c in df.columns), default=6)
     lines = [f"{'column'.ljust(width)}  {'dtype':<10} {'levels':>7}  role",
@@ -187,6 +203,9 @@ def ask_columns(df, input_fn=None, output_fn=print, **overrides) -> dict:
         ("drop_col", "drop id column", proposal["drop_col"], True),
         ("grain_cols", "grain columns", proposal["grain_cols"], False),
         ("metrics", "metric columns", proposal["metrics"], False),
+        # the split matters: summing an ETA or a fill rate is meaningless
+        ("mean_metrics", "which of those are averages (rest are summed)",
+         proposal["mean_metrics"], False),
         # speed is distance over time, so the schema has to know which is which
         ("length_metric", "distance metric (for speed)", proposal["length_metric"], True),
         ("ride_time_metric", "duration metric (for speed)", proposal["ride_time_metric"], True),
@@ -201,4 +220,6 @@ def ask_columns(df, input_fn=None, output_fn=print, **overrides) -> dict:
         picked = _parse(reply, columns, [default] if single and default else
                         ([] if single else default))
         answers[key] = (picked[0] if picked else None) if single else picked
+    answers["sum_metrics"] = [m for m in answers["metrics"]
+                              if m not in answers["mean_metrics"]]
     return answers

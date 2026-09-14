@@ -48,6 +48,39 @@ def test_the_weight_column_is_proposed_too():
     assert suggest_weight(["gmv"], weight_col="gmv") == "gmv"
 
 
+def test_the_sum_and_average_split_is_proposed_and_overridable():
+    proposal = suggest_columns(make_frame())
+    # guessed from the names: avg_km and avg_mins say what they are
+    assert proposal["mean_metrics"] == ["avg_km", "avg_mins"]
+    assert proposal["sum_metrics"] == ["trips", "bookings"]
+    assert sorted(proposal["mean_metrics"] + proposal["sum_metrics"]) == sorted(
+        proposal["metrics"])
+
+    # and the guess can be overridden either way round
+    by_mean = suggest_columns(make_frame(), mean_metrics=["trips"])
+    assert by_mean["mean_metrics"] == ["trips"]
+    assert "trips" not in by_mean["sum_metrics"]
+    by_sum = suggest_columns(make_frame(), sum_metrics=["trips", "bookings", "avg_km"])
+    assert by_sum["mean_metrics"] == ["avg_mins"]
+
+
+def test_a_name_that_gives_nothing_away_can_be_corrected():
+    """eta and fill are averages, but nothing in the name says so."""
+    frame = pd.DataFrame([{"pickup_cluster": "A", "drop_cluster": "B",
+                           "trips": 100.0, "gmv": 500.0, "eta": 12.0,
+                           "fill": 0.8} for _ in range(3)])
+    guessed = RouteExplorer(frame, weight_col="trips")
+    assert "eta" in guessed.schema.sum_metrics          # the wrong guess
+    assert guessed.value("A", "B", "eta") == pytest.approx(36.0)
+
+    told = RouteExplorer(frame, weight_col="trips",
+                         sum_metrics=["trips", "gmv"],
+                         mean_metrics=["eta", "fill"])
+    assert told.schema.mean_metrics[:2] == ["eta", "fill"]
+    assert told.value("A", "B", "eta") == pytest.approx(12.0)    # averaged
+    assert told.value("A", "B", "gmv") == pytest.approx(1500.0)  # still summed
+
+
 def test_the_speed_pair_is_proposed_too():
     proposal = suggest_columns(make_frame())
     assert proposal["length_metric"] == "avg_km"
@@ -70,7 +103,8 @@ def test_describe_columns_lists_every_column_and_its_role():
     for column in make_frame().columns:
         assert column in text
     assert "pickup id" in text and "drop id" in text
-    assert "grain" in text and "metric (distance)" in text
+    assert "grain" in text
+    assert "metric (avg, distance)" in text and "metric (sum)" in text
 
 
 def test_ask_falls_back_to_the_proposal_without_a_terminal():
@@ -85,6 +119,7 @@ def test_ask_accepts_names_numbers_and_blanks():
         "dest_zone",        # by name
         "3",               # by number: day_part
         "5 6",             # trips, bookings
+        "avg_km",          # of those, only this one is an average
         "avg_km",
         "",                 # keep the proposed duration
         "bookings",         # weight the averages by this
@@ -95,6 +130,8 @@ def test_ask_accepts_names_numbers_and_blanks():
     assert chosen["drop_col"] == "dest_zone"
     assert chosen["grain_cols"] == ["day_part"]
     assert chosen["metrics"] == ["trips", "bookings"]
+    assert chosen["mean_metrics"] == ["avg_km"]
+    assert chosen["sum_metrics"] == ["trips", "bookings"]
     assert chosen["length_metric"] == "avg_km"
     assert chosen["ride_time_metric"] == "avg_mins"
     assert chosen["weight_col"] == "bookings"
@@ -110,7 +147,7 @@ def test_ask_rejects_an_answer_that_is_not_a_column():
 
 
 def test_none_clears_a_selection():
-    replies = iter(["", "", "none", "", "", "", ""])
+    replies = iter(["", "", "none", "", "", "", "", ""])
     chosen = ask_columns(make_frame(), input_fn=lambda prompt: next(replies),
                          output_fn=lambda *a: None)
     assert chosen["grain_cols"] == []

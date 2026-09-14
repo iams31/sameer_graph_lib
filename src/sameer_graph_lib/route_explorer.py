@@ -67,7 +67,7 @@ class RouteExplorer:
         return cls(df, **kwargs)
 
     @classmethod
-    def ask(cls, data, *, input_fn=None, **kwargs) -> "RouteExplorer":
+    def ask(cls, data, *, input_fn=None, output_fn=print, **kwargs) -> "RouteExplorer":
         """Build after confirming which columns are which.
 
         Column names differ between exports, so rather than assuming
@@ -82,17 +82,19 @@ class RouteExplorer:
         """
         from .columns import ask_columns
 
-        chosen = ask_columns(data, input_fn=input_fn,
+        chosen = ask_columns(data, input_fn=input_fn, output_fn=output_fn,
                              **{k: kwargs.pop(k) for k in
                                 ("pickup_col", "drop_col", "grain_cols", "metrics",
-                                 "length_metric", "ride_time_metric", "weight_col")
+                                 "mean_metrics", "sum_metrics", "length_metric",
+                                 "ride_time_metric", "weight_col")
                                 if k in kwargs})
         if not chosen["pickup_col"] or not chosen["drop_col"]:
             raise ValueError(
                 "A route graph needs a pickup and a drop column. For data with "
                 "a single cluster column, use HexMetricGraph instead."
             )
-        for key in ("length_metric", "ride_time_metric", "weight_col"):
+        for key in ("length_metric", "ride_time_metric", "weight_col",
+                    "sum_metrics", "mean_metrics"):
             if chosen.get(key):
                 kwargs.setdefault(key, chosen[key])
         return cls(data, pickup_col=chosen["pickup_col"], drop_col=chosen["drop_col"],
