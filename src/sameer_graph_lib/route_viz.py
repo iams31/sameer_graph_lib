@@ -227,6 +227,7 @@ def plot_flow(
     per_parent: bool = True,
     rank_by: str = "edge",
     node_direction: str = "out",
+    mirror: bool = True,
     min_value: float | None = None,
     edge_filter=None,
     node_filter=None,
@@ -284,6 +285,10 @@ def plot_flow(
         metric. (``node_metric``/``edge_metric`` are accepted as aliases.)
     size_metric:
         Variable behind the node sizes. Defaults to the first node metric.
+    mirror:
+        Draw a cluster that is on both sides twice, once per side, so the
+        figure stays left-to-right. Off, the cluster is claimed by whichever
+        side reached it first and the other side's routes point backwards.
     node_direction:
         Which side of a cluster the node tables measure. ``"out"`` (the
         default) is the orders it sends, so the number reads as *what
@@ -319,7 +324,7 @@ def plot_flow(
     sub = subgraph if subgraph is not None else graph.flow_subgraph(
         focus, upstream=upstream, downstream=downstream, metric=metric,
         per_parent=per_parent, rank_by=rank_by, min_value=min_value,
-        edge_filter=edge_filter, node_filter=node_filter,
+        edge_filter=edge_filter, node_filter=node_filter, mirror=mirror,
         include_cross_edges=include_cross_edges, **grain_values,
     )
     if sub.number_of_nodes() == 0:
@@ -338,7 +343,8 @@ def plot_flow(
     if layout == "layered":
         pos = flow_layout(sub, level_gap=level_gap, spacing=spacing)
     elif layout == "geo":
-        pos = geo_layout(sub.nodes)
+        pos = {n: geo_layout([sub.nodes[n].get("cluster", n)])[sub.nodes[n].get("cluster", n)]
+               for n in sub.nodes}
     elif layout == "spring":
         pos = nx.spring_layout(sub, seed=7)
     else:
@@ -362,13 +368,16 @@ def plot_flow(
     if node_direction not in ("in", "out", "both"):
         raise ValueError("node_direction must be 'in', 'out' or 'both'")
 
+    def cluster_of(node):
+        return sub.nodes[node].get("cluster", node)
+
     def node_value(node, name):
         if node_values is not None and name in node_values.get(node, {}):
             return node_values[node][name]
         if name == "count":
             return float(sub.degree(node))
-        return graph.node_value(node, metric=name, direction=node_direction,
-                                **grain_values)
+        return graph.node_value(cluster_of(node), metric=name,
+                                direction=node_direction, **grain_values)
 
     node_table_values = {node: [node_value(node, name) for name in node_metric_names]
                          for node in nodes}
@@ -414,10 +423,19 @@ def plot_flow(
                 node_size=list(sizes), alpha=0.8, min_source_margin=2, min_target_margin=6,
             )
 
-        draw(flow_edges,
-             [_fade(source_color if d.get("side") == "source" else drop_color,
-                    int(d.get("depth") or 1), max_depth) for _, _, d in flow_edges],
-             "solid", curve)
+        # an edge between two nodes in the same column would be drawn straight
+        # through whatever sits between them, so bow those out of the way
+        def same_level(u, v):
+            return sub.nodes[u].get("level") == sub.nodes[v].get("level")
+
+        straight = [(u, v, d) for u, v, d in flow_edges if not same_level(u, v)]
+        sideways = [(u, v, d) for u, v, d in flow_edges if same_level(u, v)]
+        for subset, rad in ((straight, curve),
+                            (sideways, cross_curve if cross_curve is not None else 0.25)):
+            draw(subset,
+                 [_fade(source_color if d.get("side") == "source" else drop_color,
+                        int(d.get("depth") or 1), max_depth) for _, _, d in subset],
+                 "solid", rad)
         # cross routes arc away so they never cut straight through another node
         draw(cross_edges, [cross_color] * len(cross_edges), "dashed",
              cross_curve if cross_curve is not None else 0.25)
@@ -427,7 +445,8 @@ def plot_flow(
             labelled = edges if label_cross_edges else flow_edges
             edge_rows = {
                 (u, v): _table_rows(
-                    [graph.edge_value(u, v, name, **grain_values) for name in edge_metric_names],
+                    [graph.edge_value(cluster_of(u), cluster_of(v), name, **grain_values)
+                     for name in edge_metric_names],
                     edge_metric_names, value_format, metric_name_len,
                 )
                 for u, v, _ in labelled
@@ -453,7 +472,8 @@ def plot_flow(
     # ---- labels -------------------------------------------------------- #
     # The node name goes on the marker; the metrics hang underneath it as a
     # table, offset by the marker radius so the two never overlap.
-    nx.draw_networkx_labels(sub, pos, labels={n: _short(n, label_len) for n in nodes},
+    nx.draw_networkx_labels(sub, pos,
+                            labels={n: _short(cluster_of(n), label_len) for n in nodes},
                             font_size=font_size, font_weight="bold", font_color=INK, ax=ax)
     if show_node_values:
         node_rows = {
@@ -523,7 +543,8 @@ def plot_flow(
             text.set_color(MUTED_INK)
 
     if title is None:
-        bits = [f"Order flow around {', '.join(str(f) for f in focus_nodes)}",
+        named = [str(sub.nodes[f].get("cluster", f)) for f in focus_nodes]
+        bits = [f"Order flow around {', '.join(named)}",
                 f"ranked by {metric}"]
         shown = [m for m in dict.fromkeys(node_metric_names + edge_metric_names) if m != metric]
         if shown:

@@ -89,6 +89,42 @@ ROWS = "__rows"
 #: Metric aliases that resolve against the schema instead of a column name.
 DERIVED_METRICS = ("length", "ride_time", "speed", "row_count", "count")
 
+#: Operators usable in a derived metric spec such as ``("orders", "/", "requests")``.
+DERIVED_OPS = {
+    "/": lambda a, b: np.divide(a, b, out=np.full(np.shape(np.asarray(b, dtype=float)),
+                                                  np.nan, dtype=float),
+                                where=(np.asarray(b, dtype=float) != 0)),
+    "*": lambda a, b: np.asarray(a, dtype=float) * np.asarray(b, dtype=float),
+    "+": lambda a, b: np.asarray(a, dtype=float) + np.asarray(b, dtype=float),
+    "-": lambda a, b: np.asarray(a, dtype=float) - np.asarray(b, dtype=float),
+}
+
+
+def _as_derived(spec):
+    """Turn a derived-metric spec into a function of the collapsed metrics.
+
+    ``("orders", "/", "requests")`` becomes a division applied *after* the
+    metrics are aggregated, which is the whole point: a ratio of totals is not
+    the total of the ratios. A callable is passed through unchanged and is
+    handed the dict of already-collapsed values.
+    """
+    if callable(spec):
+        return spec
+    if not (isinstance(spec, (tuple, list)) and len(spec) == 3):
+        raise ValueError(
+            f"A derived metric is a callable or (left, op, right), got {spec!r}"
+        )
+    left, op, right = spec
+    if op not in DERIVED_OPS:
+        raise ValueError(f"Unknown operator {op!r}; use one of {sorted(DERIVED_OPS)}")
+    apply = DERIVED_OPS[op]
+
+    def compute(values):
+        return apply(values[left], values[right])
+
+    compute.spec = (left, op, right)
+    return compute
+
 
 #: Operators a filter test can use.
 COMPARISONS = {
@@ -208,6 +244,7 @@ class RouteSchema:
     length_metric: str = "avg_distance"
     ride_time_metric: str = "avg_duration"
     speed_scale: float = 1.0
+    derived_metrics: dict = field(default_factory=dict)
 
     def __post_init__(self):
         if not self.grains:
@@ -217,6 +254,14 @@ class RouteSchema:
         for m in (self.length_metric, self.ride_time_metric):
             if m not in self.mean_metrics:
                 raise ValueError(f"{m!r} must be one of mean_metrics")
+        self.derived_metrics = dict(self.derived_metrics or {})
+        self._derived = {name: _as_derived(spec)
+                         for name, spec in self.derived_metrics.items()}
+        clash = set(self._derived) & set(self.sum_metrics + self.mean_metrics)
+        if clash:
+            raise ValueError(
+                f"Derived metric name(s) already used by a column: {sorted(clash)}"
+            )
 
     @classmethod
     def from_frame(cls, df, grain_cols=(), exclude_cols=(), metrics=None, **kwargs):
@@ -283,6 +328,7 @@ class RouteSchema:
 
         kwargs.setdefault("sum_metrics", inferred_sums)
         mean = list(kwargs.get("mean_metrics", inferred_means))
+        derived = kwargs.get("derived_metrics") or {}
         # the length and ride-time metrics stay in the schema even when the
         # frame lacks them, so speed is NaN instead of the schema refusing to build
         for key, fallback in (("length_metric", "avg_distance"),
@@ -291,6 +337,7 @@ class RouteSchema:
             if metric not in mean:
                 mean.append(metric)
         kwargs["mean_metrics"] = mean
+        kwargs["derived_metrics"] = derived
         return cls(grains=grains, **kwargs)
 
     @property
@@ -324,7 +371,25 @@ class RouteSchema:
     @property
     def metric_names(self) -> list[str]:
         """Every metric ``summary()`` can return, including derived ones."""
-        return ["row_count", *self.sum_metrics, *self.mean_metrics, "speed"]
+        return ["row_count", *self.sum_metrics, *self.mean_metrics, "speed",
+                *self._derived]
+
+    def apply_derived(self, values: dict) -> dict:
+        """Add the derived metrics to a dict of already-collapsed metrics.
+
+        Applied after aggregation at every level, so a ratio is always a ratio
+        of the totals for whatever is in scope - one bucket, one route, a
+        cluster's inbound side, or the whole graph.
+        """
+        for name, compute in self._derived.items():
+            try:
+                values[name] = compute(values)
+            except KeyError as exc:
+                raise KeyError(
+                    f"Derived metric {name!r} needs {exc.args[0]!r}, "
+                    "which is not one of the schema's metrics"
+                ) from None
+        return values
 
     def empty_arrays(self):
         names = [ROWS, *self.sum_metrics]
@@ -458,7 +523,9 @@ class RouteTensor:
             out[m] = np.divide(self.arrays[f"{m}__wsum"], w,
                                out=np.full_like(w, np.nan), where=w > 0)
         out["speed"] = self._speed(out[s.length_metric], out[s.ride_time_metric])
-        return xr.Dataset({k: (dims, v) for k, v in out.items()}, coords=s.grains)
+        s.apply_derived(out)                      # per bucket, after collapsing
+        return xr.Dataset({k: (dims, np.asarray(v)) for k, v in out.items()},
+                          coords=s.grains)
 
     def get(self, **grain_values):
         """Metrics for a specific bucket, e.g. get(hour=9, week_period='weekday')."""
@@ -506,7 +573,9 @@ class RouteTensor:
             w = tot[f"{m}__w"]
             out[m] = tot[f"{m}__wsum"] / w if w > 0 else np.nan
         out["speed"] = float(self._speed(out[s.length_metric], out[s.ride_time_metric]))
-        return out
+        s.apply_derived(out)                      # after the sums and the means
+        return {k: (float(v) if np.isscalar(v) or np.ndim(v) == 0 else v)
+                for k, v in out.items()}
 
     def frame(self, drop_empty: bool = True):
         """Long DataFrame with one row per grain bucket."""
@@ -550,7 +619,8 @@ class RouteGraph:
     # ---------------- construction ---------------- #
     #: Keyword arguments that belong to the schema rather than the graph.
     SCHEMA_OPTIONS = ("metrics", "sum_metrics", "mean_metrics", "weight_col",
-                      "length_metric", "ride_time_metric", "speed_scale", "exclude_cols")
+                      "length_metric", "ride_time_metric", "speed_scale",
+                      "derived_metrics", "exclude_cols")
 
     @classmethod
     def from_dataframe(cls, df, schema=None, pickup_col="pickup_cluster",
@@ -1312,7 +1382,8 @@ class RouteGraph:
     def flow_subgraph(self, focus, upstream=5, downstream=5, metric=None,
                       per_parent=True, min_value=None, include_cross_edges=False,
                       exclude_self_loops=True, edge_filter=None, node_filter=None,
-                      node_direction="both", rank_by="edge", **grain_values):
+                      node_direction="both", rank_by="edge", mirror=True,
+                      **grain_values):
         """Expand around ``focus`` and keep only the top partners at each hop.
 
         ``upstream`` walks against the arrows (where orders come from) and
@@ -1323,6 +1394,15 @@ class RouteGraph:
 
         ``rank_by`` decides what the top-k measures at each hop: ``"edge"``
         keeps the biggest routes, ``"node"`` keeps the biggest clusters.
+
+        ``mirror`` (on by default) splits a cluster that is reached on both
+        sides into two nodes, one upstream and one downstream, so the picture
+        stays left-to-right. Without it the cluster is claimed by whichever
+        side found it first and the other side's routes point backwards across
+        the figure. A cluster reached twice on the *same* side is still one
+        node - only the two directions are separated. Split nodes are keyed
+        ``(side, cluster)`` and carry the plain id in their ``cluster``
+        attribute; everything else keeps the cluster id as its key.
 
         ``edge_filter`` / ``node_filter`` apply :meth:`keep` before walking, so
         the expansion never crosses a route that fails the filter and the
@@ -1353,68 +1433,96 @@ class RouteGraph:
                 )
 
         sub = nx.DiGraph()
+        focus_key = {f: (("focus", f) if mirror else f) for f in focus_nodes}
         for node in focus_nodes:
-            sub.add_node(node, level=0, depth=0, side="focus", value=np.nan, is_focus=True)
+            sub.add_node(focus_key[node], cluster=node, level=0, depth=0,
+                         side="focus", value=np.nan, is_focus=True)
+
+        def key_for(cluster, side):
+            """Node key: split by side only when mirroring, never for a focus."""
+            if cluster in focus_key:
+                return focus_key[cluster]
+            return (side, cluster) if mirror else cluster
 
         def expand(direction, plan, sign):
-            frontier = list(focus_nodes)
+            frontier = [(focus_key[f], f) for f in focus_nodes]
             side = "source" if sign < 0 else "drop"
             for hop, keep in enumerate(plan, start=1):
                 if not frontier:
                     break
                 picks = []
                 if per_parent:
-                    for parent in frontier:
-                        picks += [(parent, p, v) for p, v in source.partners(
+                    for parent_key, parent in frontier:
+                        picks += [(parent_key, parent, p, v) for p, v in source.partners(
                             parent, direction=direction, metric=metric, top=keep,
                             min_value=min_value, rank_by=rank_by,
                             node_direction=node_direction, **grain_values)]
                 else:
                     pool = []
-                    for parent in frontier:
-                        pool += [(parent, p, v) for p, v in source.partners(
+                    for parent_key, parent in frontier:
+                        pool += [(parent_key, parent, p, v) for p, v in source.partners(
                             parent, direction=direction, metric=metric,
                             min_value=min_value, rank_by=rank_by,
                             node_direction=node_direction, **grain_values)]
-                    pool.sort(key=lambda item: -np.inf if np.isnan(item[2]) else item[2],
+                    pool.sort(key=lambda item: -np.inf if np.isnan(item[3]) else item[3],
                               reverse=True)
                     picks = pool[:keep] if keep else pool
 
                 next_frontier = []
-                for parent, partner, value in picks:
+                focus_set = set(focus_nodes)
+                for parent_key, parent, partner, value in picks:
                     if exclude_self_loops and partner == parent:
                         continue
-                    if partner not in sub:
-                        sub.add_node(partner, level=sign * hop, depth=hop, side=side,
-                                     value=0.0, is_focus=False)
-                        next_frontier.append(partner)
+                    if hop > 1 and partner in focus_set:
+                        # looping back to the focus from a deeper hop would draw
+                        # a route already shown, pointing the wrong way
+                        continue
+                    partner_key = key_for(partner, side)
+                    if partner_key not in sub:
+                        sub.add_node(partner_key, cluster=partner, level=sign * hop,
+                                     depth=hop, side=side, value=0.0, is_focus=False)
+                        next_frontier.append((partner_key, partner))
                     if not np.isnan(value):
-                        node = sub.nodes[partner]
+                        node = sub.nodes[partner_key]
                         node["value"] = float(np.nansum([node.get("value", 0.0), value]))
-                    src, dst = (parent, partner) if sign > 0 else (partner, parent)
+                    src, dst = ((parent_key, partner_key) if sign > 0
+                                else (partner_key, parent_key))
+                    u, v = (parent, partner) if sign > 0 else (partner, parent)
                     edge_value = (value if rank_by == "edge"
-                                  else source.edge_value(src, dst, metric, **grain_values))
+                                  else source.edge_value(u, v, metric, **grain_values))
                     sub.add_edge(src, dst, value=edge_value, metric=metric,
-                                 rank_value=value,
-                                 depth=hop, side=side,
-                                 routes=source.graph[src][dst].get("count", 1))
+                                 rank_value=value, depth=hop, side=side,
+                                 routes=source.graph[u][v].get("count", 1))
                 frontier = next_frontier
 
         expand("in", self._level_plan(upstream), -1)
         expand("out", self._level_plan(downstream), 1)
 
         if include_cross_edges:
-            selected = list(sub.nodes)
-            for u in selected:
-                for v in selected:
-                    if u == v or sub.has_edge(u, v) or not source.graph.has_edge(u, v):
+            selected = [(k, sub.nodes[k]["cluster"]) for k in sub.nodes]
+            for u_key, u in selected:
+                for v_key, v in selected:
+                    if u == v or sub.has_edge(u_key, v_key):
                         continue
-                    sub.add_edge(u, v, side="cross", depth=None, metric=metric,
+                    if not source.graph.has_edge(u, v):
+                        continue
+                    sub.add_edge(u_key, v_key, side="cross", depth=None, metric=metric,
                                  value=source.edge_value(u, v, metric, **grain_values),
                                  routes=source.graph[u][v].get("count", 1))
 
+        if mirror:
+            # only a cluster that really is on both sides stays split
+            seen: dict = {}
+            for node, data in sub.nodes(data=True):
+                seen.setdefault(data["cluster"], []).append(node)
+            plain = {keys[0]: cluster for cluster, keys in seen.items() if len(keys) == 1}
+            if plain:
+                sub = nx.relabel_nodes(sub, plain, copy=True)
+
         sub.graph.update({
-            "focus": focus_nodes,
+            "focus": [focus_key[f] if focus_key[f] in sub else f for f in focus_nodes],
+            "focus_clusters": focus_nodes,
+            "mirror": mirror,
             "metric": metric,
             "grain": dict(grain_values),
             "upstream": self._level_plan(upstream),
@@ -1442,16 +1550,18 @@ class RouteGraph:
                                  metric=metric, **options, **grain)
         rows = []
         for u, v, data in sub.edges(data=True):
+            pickup = sub.nodes[u].get("cluster", u)
+            drop = sub.nodes[v].get("cluster", v)
             row = {
                 "side": data["side"],
                 "hop": data["depth"],
-                "pickup_cluster": u,
-                "drop_cluster": v,
+                "pickup_cluster": pickup,
+                "drop_cluster": drop,
                 metric: data["value"],
                 "routes": data["routes"],
             }
             for extra in extra_metrics:
-                row[extra] = self.edge_value(u, v, extra, **grain)
+                row[extra] = self.edge_value(pickup, drop, extra, **grain)
             rows.append(row)
         frame = pd.DataFrame(rows)
         if frame.empty:
@@ -1474,20 +1584,22 @@ class RouteGraph:
             for u, v, data in edges:
                 if data.get("side") != side:
                     continue
-                partner = v if side == "drop" else u
-                if partner not in seen:
-                    partners.append((partner, data["value"]))
-            partners.sort(key=lambda item: -np.inf if np.isnan(item[1]) else item[1], reverse=True)
-            for index, (partner, value) in enumerate(partners):
+                partner_key = v if side == "drop" else u
+                partner = sub.nodes[partner_key].get("cluster", partner_key)
+                if partner_key not in seen:
+                    partners.append((partner_key, partner, data["value"]))
+            partners.sort(key=lambda item: -np.inf if np.isnan(item[2]) else item[2], reverse=True)
+            for index, (partner_key, partner, value) in enumerate(partners):
                 last = index == len(partners) - 1
                 arrow = "->" if side == "drop" else "<-"
                 branch = "+-- " if last else "|-- "
                 lines.append(f"{prefix}{branch}{arrow} {partner}  [{value_format.format(value)}]")
-                walk(partner, side, prefix + ("    " if last else "|   "), seen | {partner})
+                walk(partner_key, side, prefix + ("    " if last else "|   "),
+                     seen | {partner_key})
 
         for node in sub.graph["focus"]:
             grain_note = f"  {sub.graph['grain']}" if sub.graph["grain"] else ""
-            lines.append(f"{node}  ({metric}{grain_note})")
+            lines.append(f"{sub.nodes[node].get('cluster', node)}  ({metric}{grain_note})")
             if sub.graph["upstream"]:
                 lines.append("  sources (orders coming in)")
                 walk(node, "source", "  ", {node})

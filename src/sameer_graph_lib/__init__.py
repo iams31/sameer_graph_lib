@@ -139,4 +139,4 @@ __all__ = [
     "suggest_columns",
 ]
 
-__version__ = "0.4.1"
+__version__ = "0.4.2"

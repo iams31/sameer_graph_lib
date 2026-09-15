@@ -587,3 +587,125 @@ def test_nothing_new_is_required():
         graph.node_split("A", ["orders"])
     with pytest.raises(TypeError):
         graph.node_metrics_frame(["orders"])
+
+
+def make_mirror_frame():
+    """Exp is the observation node; B2 and A2 sit on both of its sides."""
+    legs = [("B2", "Exp"), ("A1", "B2"), ("A2", "B2"), ("A3", "B2"),
+            ("Exp", "A1"), ("Exp", "B1"), ("Exp", "B2"), ("B1", "A2"), ("B1", "C1")]
+    return pd.DataFrame([
+        {"pickup_cluster": u, "drop_cluster": v, "orders": 10.0 * (i + 1),
+         "requests": 20.0, "avg_distance": 3.0, "avg_duration": 12.0}
+        for i, (u, v) in enumerate(legs)
+    ])
+
+
+def test_a_cluster_on_both_sides_is_split():
+    graph = RouteGraph.from_dataframe(make_mirror_frame())
+    sub = graph.flow_subgraph("Exp", upstream=[3, 3], downstream=[3, 3])
+
+    clusters = {}
+    for node, data in sub.nodes(data=True):
+        clusters.setdefault(data["cluster"], []).append(data["side"])
+    # B2 feeds Exp and Exp feeds B2, so it appears once on each side
+    assert sorted(clusters["B2"]) == ["drop", "source"]
+    assert sorted(clusters["A2"]) == ["drop", "source"]
+    # a cluster on one side only keeps its plain id as the node key
+    assert "A3" in sub and sub.nodes["A3"]["cluster"] == "A3"
+    assert ("source", "B2") in sub and ("drop", "B2") in sub
+    # and every node carries the real cluster id for lookups
+    assert all("cluster" in d for _, d in sub.nodes(data=True))
+
+
+def test_splitting_removes_the_backwards_arrows():
+    graph = RouteGraph.from_dataframe(make_mirror_frame())
+    options = dict(upstream=[3, 3], downstream=[3, 3])
+
+    merged = graph.flow_subgraph("Exp", mirror=False, **options)
+    backwards = [(u, v) for u, v in merged.edges()
+                 if merged.nodes[u]["level"] > merged.nodes[v]["level"]]
+    assert backwards, "the old behaviour drew routes pointing back across the figure"
+
+    split = graph.flow_subgraph("Exp", mirror=True, **options)
+    assert not [(u, v) for u, v in split.edges()
+                if split.nodes[u]["level"] > split.nodes[v]["level"]]
+
+
+def test_a_cluster_reached_twice_on_one_side_is_drawn_once():
+    graph = RouteGraph.from_dataframe(make_mirror_frame())
+    sub = graph.flow_subgraph("Exp", upstream=0, downstream=[3, 3])
+    drops = [d["cluster"] for _, d in sub.nodes(data=True) if d["side"] == "drop"]
+    assert len(drops) == len(set(drops))          # no repeats within a side
+
+
+def test_the_frames_report_cluster_ids_not_node_keys():
+    graph = RouteGraph.from_dataframe(make_mirror_frame())
+    frame = graph.flow_frame("Exp", upstream=[3, 3], downstream=[3, 3])
+    for column in ("pickup_cluster", "drop_cluster"):
+        assert all(isinstance(v, str) for v in frame[column])
+    assert "B2" in set(frame["pickup_cluster"]) | set(frame["drop_cluster"])
+    tree = graph.flow_tree("Exp", upstream=2, downstream=2)
+    assert "('source'" not in tree and "('drop'" not in tree
+
+
+def test_derived_metrics_are_computed_after_aggregation():
+    frame = pd.DataFrame([
+        {"pickup_cluster": "A", "drop_cluster": "B", "day": "mon",
+         "orders": 10.0, "requests": 100.0, "avg_distance": 2.0, "avg_duration": 10.0},
+        {"pickup_cluster": "A", "drop_cluster": "B", "day": "tue",
+         "orders": 90.0, "requests": 300.0, "avg_distance": 4.0, "avg_duration": 10.0},
+    ])
+    graph = RouteGraph.from_dataframe(
+        frame, grain_cols=("day",), weight_col="requests",
+        derived_metrics={"fill_rate": ("orders", "/", "requests"),
+                         "lost": ("requests", "-", "orders")})
+
+    assert "fill_rate" in graph.schema.metric_names
+    # per bucket it is that bucket's ratio
+    assert graph.edge_value("A", "B", "fill_rate", day="mon") == pytest.approx(0.1)
+    assert graph.edge_value("A", "B", "fill_rate", day="tue") == pytest.approx(0.3)
+    # collapsed it is the ratio of the totals, not the mean of the ratios
+    assert graph.edge_value("A", "B", "fill_rate") == pytest.approx(100 / 400)
+    assert graph.edge_value("A", "B", "fill_rate") != pytest.approx((0.1 + 0.3) / 2)
+    assert graph.edge_value("A", "B", "lost") == pytest.approx(300.0)
+
+
+def test_a_derived_metric_behaves_like_any_other():
+    frame = make_weighted_frame()
+    graph = RouteGraph.from_dataframe(
+        frame, derived_metrics={"per_request": ("orders", "/", "requests")})
+    assert graph.node_split("A", metrics=["per_request"])["per_request"]["in"] == (
+        pytest.approx(graph.node_value("A", "orders", "in")
+                      / graph.node_value("A", "requests", "in")))
+    assert not graph.rank_routes(metric="per_request").empty
+    assert graph.matching_routes(edge_filter={"per_request": (">", 0.05)})
+    assert "per_request" in graph.edges_frame(metrics=["per_request"]).columns
+
+
+def test_a_derived_metric_can_be_a_function():
+    frame = make_weighted_frame()
+    graph = RouteGraph.from_dataframe(frame, derived_metrics={
+        "gap": lambda v: v["requests"] - v["orders"] * 2})
+    edge = graph.route_summary("B", "A")
+    assert edge["gap"] == pytest.approx(edge["requests"] - edge["orders"] * 2)
+
+
+def test_bad_derived_specs_are_rejected():
+    frame = make_weighted_frame()
+    with pytest.raises(ValueError, match="left, op, right"):
+        RouteGraph.from_dataframe(frame, derived_metrics={"x": ("orders", "/")})
+    with pytest.raises(ValueError, match="Unknown operator"):
+        RouteGraph.from_dataframe(frame, derived_metrics={"x": ("orders", "^", "requests")})
+    with pytest.raises(ValueError, match="already used by a column"):
+        RouteGraph.from_dataframe(frame, derived_metrics={"orders": ("orders", "/", "requests")})
+    with pytest.raises(KeyError, match="not one of the schema"):
+        RouteGraph.from_dataframe(frame, derived_metrics={"x": ("nope", "/", "requests")})
+
+
+def test_dividing_by_zero_gives_nan_not_an_error():
+    frame = pd.DataFrame([{"pickup_cluster": "A", "drop_cluster": "B",
+                           "orders": 5.0, "requests": 0.0,
+                           "avg_distance": 1.0, "avg_duration": 1.0}])
+    graph = RouteGraph.from_dataframe(
+        frame, weight_col=None, derived_metrics={"rate": ("orders", "/", "requests")})
+    assert np.isnan(graph.edge_value("A", "B", "rate"))
