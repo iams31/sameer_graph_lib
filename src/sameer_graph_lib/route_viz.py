@@ -180,6 +180,8 @@ def _auto_figsize(sub, node_metrics, edge_metrics, font_size,
     row = len(node_metrics) * (font_size + 3) / 72.0 + 0.85
 
     min_w, min_h, max_w, max_h = limits
+    if levels == 1:
+        min_w = max(6.0, column * 1.5)      # one column needs no room for three
     return (min(max(min_w, levels * column), max_w),
             min(max(min_h, busiest * row + 2.0), max_h))
 
@@ -484,6 +486,13 @@ def plot_flow(
                 bbox=dict(boxstyle="square,pad=0.35", facecolor="white",
                           edgecolor=HAIRLINE, linewidth=0.6, alpha=0.95),
             )
+
+    if pos:
+        # every node on one column leaves the x range to the edge curves, which
+        # pins the column off to one side; centre it instead
+        xs = [x for x, _ in pos.values()]
+        if max(xs) - min(xs) < 1e-9:
+            ax.set_xlim(xs[0] - level_gap * 0.8, xs[0] + level_gap * 0.8)
 
     if annotate_levels and layout == "layered" and pos:
         for level in sorted({int(d.get("level", 0)) for _, d in sub.nodes(data=True)}):

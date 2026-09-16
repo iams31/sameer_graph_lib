@@ -278,3 +278,27 @@ def test_node_direction_is_selectable(graph):
 def test_the_ring_view_measures_the_same_way(graph):
     for direction in ("in", "out", "both"):
         close(graph.plot_graph(node_direction=direction))
+
+
+def test_a_single_column_plot_is_centred():
+    import matplotlib.pyplot as plt
+
+    # a cluster whose only route is back to itself: focus and loop, one column
+    frame = pd.DataFrame([
+        {"pickup_cluster": "C", "drop_cluster": "C", "week_period": w,
+         "orders": 150.0, "requests": 210.0, "avg_distance": 2.0}
+        for w in ("weekday", "weekend")
+    ])
+    graph = RouteGraph.from_dataframe(frame, grain_cols=("week_period",),
+                                      weight_col="requests")
+
+    fig = graph.plot_flow("C", upstream=3, downstream=3, metric="orders",
+                          node_metrics=["orders"])
+    ax = fig.axes[0]
+    low, high = ax.get_xlim()
+
+    # the column sits at x=0; without centring the edge curve pins it to one side
+    assert low < 0 < high
+    assert abs(low + high) < 1e-6
+    assert fig.get_size_inches()[0] < 12.0      # one column needs less width
+    plt.close(fig)
