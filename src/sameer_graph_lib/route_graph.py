@@ -1303,9 +1303,15 @@ class RouteGraph:
                     u, v = (parent, partner) if sign > 0 else (partner, parent)
                     edge_value = (value if rank_by == "edge"
                                   else source.edge_value(u, v, metric, **grain_values))
+                    routes = source.graph[u][v].get("count", 1)
                     sub.add_edge(src, dst, value=edge_value, metric=metric,
                                  rank_value=value, depth=hop, side=side,
-                                 routes=source.graph[u][v].get("count", 1))
+                                 routes=routes)
+                    if src == dst:
+                        sub.nodes[src].setdefault("loops", {})[side] = {
+                            "value": edge_value, "rank_value": value,
+                            "depth": hop, "metric": metric, "routes": routes,
+                        }
 
                 if rest:
                     _add_rest(sub, source, left_out, side, sign, hop, metric,

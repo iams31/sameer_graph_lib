@@ -59,6 +59,30 @@ def make_frame() -> pd.DataFrame:
     ])
 
 
+def make_modest_loop_frame() -> pd.DataFrame:
+    """A loop that is small beside A1's sources and large beside its drops."""
+    routes = [
+        ("A1", "A1", 1000.0, 1.2),
+        ("C1", "A1", 3000.0, 4.0),
+        ("C2", "A1", 2000.0, 3.0),
+        ("C3", "A1", 1500.0, 2.5),
+        ("A1", "B1", 500.0, 5.0),
+        ("A1", "B2", 400.0, 6.0),
+    ]
+    return pd.DataFrame([
+        {
+            "pickup_cluster": pickup,
+            "drop_cluster": drop,
+            "week_period": week_period,
+            "orders": orders,
+            "requests": orders * 1.4,
+            "avg_distance": distance,
+        }
+        for pickup, drop, orders, distance in routes
+        for week_period in ("weekday", "weekend")
+    ])
+
+
 def report(explorer: RouteExplorer) -> dict:
     """Print what the loop does to the top-k and to the totals."""
     graph = explorer.graph
@@ -151,6 +175,30 @@ def main() -> None:
                    if not data.get("is_focus") and data["cluster"] != "A1"]
         print(f"   upstream={keep}, loop {'drawn ' if kept_loop else 'hidden'}"
               f" -> {len(outside)} outside clusters {outside}")
+
+    # each side judges the loop on its own threshold, so a loop can be drawn
+    # upstream, downstream, on both, or on neither
+    print()
+    print("and each side decides for itself, against its own top x:")
+    modest = RouteExplorer(
+        make_modest_loop_frame(), grain_cols=("week_period",),
+        sum_metrics=["orders", "requests"], mean_metrics=["avg_distance"],
+        weight_col="requests", metric="orders",
+    )
+    for up, down in ((3, 3), (3, 0), (0, 3)):
+        sub = modest.graph.flow_subgraph(
+            "A1", upstream=up, downstream=down, metric="orders",
+            exclude_self_loops=False)
+        focus = [node for node, data in sub.nodes(data=True)
+                 if data.get("is_focus")][0]
+        rings = sorted(sub.nodes[focus].get("loops") or {})
+        print(f"   upstream={up} downstream={down} -> rings on {rings or 'neither side'}")
+
+    save(modest.plot(
+        "A1", upstream=3, downstream=3, exclude_self_loops=False,
+        node_metrics=["orders"], edge_metrics=["orders"],
+        title="the loop clears the downstream threshold only",
+    ), here / "self_loop_one_side.png")
 
 
 if __name__ == "__main__":

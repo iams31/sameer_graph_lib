@@ -890,12 +890,51 @@ def test_a_kept_self_loop_is_drawn_on_its_own_node():
                               exclude_self_loops=False)
     focus = [n for n, d in sub.nodes(data=True) if d.get("is_focus")][0]
     assert (focus, focus) in sub.edges
-    assert sub.nodes[focus]["value"] is not None
+
+    # A1 -> A1 is the biggest route on both sides, so both expansions keep it
+    assert sorted(sub.nodes[focus]["loops"]) == ["drop", "source"]
+
+    fig = graph.plot_flow("A1", upstream=3, downstream=3, metric="orders",
+                          exclude_self_loops=False, edge_metrics=["orders"])
+    rings = [p for p in fig.axes[0].patches
+             if type(p).__name__ == "Ellipse" and not p.get_fill()]
+    assert len(rings) == 2
+    assert any("1,800" in t.get_text() for t in fig.axes[0].texts)
+    plt.close(fig)
+
+
+def test_each_side_judges_the_self_loop_on_its_own_threshold():
+    import matplotlib.pyplot as plt
+
+    # the loop is small against A1's sources and large against its drops
+    routes = [("A1", "A1", 1000.0), ("C1", "A1", 3000.0), ("C2", "A1", 2000.0),
+              ("C3", "A1", 1500.0), ("A1", "B1", 500.0), ("A1", "B2", 400.0)]
+    frame = pd.DataFrame([
+        {"pickup_cluster": p, "drop_cluster": d, "week_period": w,
+         "orders": orders, "requests": orders, "avg_distance": 3.0}
+        for p, d, orders in routes for w in ("weekday", "weekend")
+    ])
+    graph = RouteGraph.from_dataframe(frame, grain_cols=("week_period",),
+                                      weight_col="requests")
+
+    assert [n for n, _ in graph.top_sources("A1", top=3, metric="orders")] == \
+        ["C1", "C2", "C3"]
+    assert graph.top_drops("A1", top=3, metric="orders")[0][0] == "A1"
+
+    sub = graph.flow_subgraph("A1", upstream=3, downstream=3, metric="orders",
+                              exclude_self_loops=False)
+    focus = [n for n, d in sub.nodes(data=True) if d.get("is_focus")][0]
+    assert sorted(sub.nodes[focus]["loops"]) == ["drop"]
 
     fig = graph.plot_flow("A1", upstream=3, downstream=3, metric="orders",
                           exclude_self_loops=False, edge_metrics=["orders"])
     rings = [p for p in fig.axes[0].patches
              if type(p).__name__ == "Ellipse" and not p.get_fill()]
     assert len(rings) == 1
-    assert any("1,800" in t.get_text() for t in fig.axes[0].texts)
     plt.close(fig)
+
+    # turning a side off takes its loop with it
+    only_up = graph.flow_subgraph("A1", upstream=3, downstream=0, metric="orders",
+                                  exclude_self_loops=False)
+    focus = [n for n, d in only_up.nodes(data=True) if d.get("is_focus")][0]
+    assert not (only_up.nodes[focus].get("loops") or {})

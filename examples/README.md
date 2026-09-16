@@ -92,6 +92,10 @@ It prints the arithmetic and saves two images:
   on the cluster it loops on with its own metric table, and does take a place in
   the top x
 
+- `self_loop_one_side.png` - the two sides judge the loop separately, each
+  against its own top x, so a loop that is large beside a cluster's drops but
+  small beside its sources is drawn downstream only
+
 The script also shows what that costs: at `upstream=3` with the loop drawn you
 see two outside clusters rather than three, so raise the top x by one if you
 want the same number of partners.

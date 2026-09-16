@@ -506,6 +506,20 @@ on the cluster it loops on, carrying its own table:
 ex.plot("A1", upstream=3, downstream=3, exclude_self_loops=False)
 ```
 
+The two sides judge it separately, each against its own top-k and `min_value`.
+A loop that is large next to the cluster's drops but small next to its sources
+is drawn on the downstream side only, and you get one ring rather than two:
+
+```python
+ex.plot("A1", upstream=3, downstream=3, exclude_self_loops=False)
+# sources top 3: C1, C2, C3      - the loop missed the cut here
+# drops   top 3: A1, B1, B2      - and made it here
+```
+
+Turning a side off (`downstream=0`) takes its ring with it. When both sides keep
+it you see a ring in each side's colour, and `flow_subgraph` records the verdict
+on the node as `loops={"source": ..., "drop": ...}`.
+
 `rest_label=` renames it, and `clusters_summary(clusters, direction=)` is the
 same merge on its own. As with every other node, the table drawn on it measures
 those clusters as a side of the graph; the edge into it measures the routes.

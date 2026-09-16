@@ -367,7 +367,8 @@ def plot_flow(
         def same_level(u, v):
             return sub.nodes[u].get("level") == sub.nodes[v].get("level")
 
-        loops = [(u, v, d) for u, v, d in flow_edges if u == v]
+        loops = [(node, side, info) for node in nodes
+                 for side, info in (sub.nodes[node].get("loops") or {}).items()]
         flow_edges = [(u, v, d) for u, v, d in flow_edges if u != v]
         straight = [(u, v, d) for u, v, d in flow_edges if not same_level(u, v)]
         sideways = [(u, v, d) for u, v, d in flow_edges if same_level(u, v)]
@@ -386,27 +387,34 @@ def plot_flow(
             ys = [p[1] for p in pos.values()]
             span_x = (max(xs) - min(xs)) or level_gap
             span_y = (max(ys) - min(ys)) or spacing
-        for u, _, data in loops:
-            colour = _fade(source_color if data.get("side") == "source" else drop_color,
-                           int(data.get("depth") or 1), max_depth)
+        for node, side, info in loops:
+            colour = _fade(source_color if side == "source" else drop_color,
+                           int(info.get("depth") or 1), max_depth)
             wide, tall = 0.11 * span_x, 0.11 * span_y
-            x, y = pos[u]
-            centre = y + tall * 0.75
+            x, y = pos[node]
+            both = len(sub.nodes[node].get("loops") or {}) > 1
+            shift = 0.0 if not both else (-0.62 if side == "source" else 0.62) * wide
+            centre_x, centre_y = x + shift, y + tall * 0.75
             ax.add_patch(mpatches.Ellipse(
-                (x, centre), wide, tall, fill=False, lw=width_of[(u, u)],
+                (centre_x, centre_y), wide, tall, fill=False,
+                lw=width_of.get((node, node), edge_width[0]),
                 ec=colour, alpha=0.8, zorder=1))
-            ax.annotate("", xy=(x + wide * 0.30, centre + tall * 0.40),
-                        xytext=(x + wide * 0.12, centre + tall * 0.48),
+            tip = 1 if side == "drop" else -1
+            ax.annotate("", xy=(centre_x + tip * wide * 0.30, centre_y + tall * 0.40),
+                        xytext=(centre_x + tip * wide * 0.12, centre_y + tall * 0.48),
                         arrowprops=dict(arrowstyle="-|>", color=colour, lw=0,
                                         mutation_scale=13, alpha=0.9), zorder=2)
-            loop_labels[u] = (x, centre + tall * 0.5 + 0.12 * span_y)
+            lift = 0.10 if side == "source" or not both else 0.24
+            loop_labels[(node, side)] = (centre_x,
+                                         centre_y + tall * 0.5 + lift * span_y)
 
         if show_edge_values and loops:
-            for u, v, _ in loops:
-                rows = _table_rows([edge_value(u, v, name) for name in edge_metric_names],
-                                   edge_metric_names, value_format, metric_name_len)
+            for node, side, _ in loops:
+                rows = _table_rows(
+                    [edge_value(node, node, name) for name in edge_metric_names],
+                    edge_metric_names, value_format, metric_name_len)
                 key_width, value_width = _column_widths([rows])
-                x, y = loop_labels[u]
+                x, y = loop_labels[(node, side)]
                 ax.text(x, y, metric_table(rows, key_width, value_width,
                                            show_names=show_metric_names
                                            and len(edge_metric_names) > 1),
