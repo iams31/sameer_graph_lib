@@ -160,7 +160,7 @@ def _cluster_side_tensor(source, clusters, direction, grain_values):
 def _add_self_nodes(sub, source, metric, grain_values):
     for node in list(sub.nodes):
         data = sub.nodes[node]
-        if data.get("is_rest") or data.get("is_self"):
+        if not data.get("is_focus"):
             continue
         cluster = data.get("cluster")
         if cluster is None or not source.graph.has_edge(cluster, cluster):

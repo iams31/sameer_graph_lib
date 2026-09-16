@@ -498,8 +498,8 @@ top 3 + rest        :     35,151.2
 
 ### A cluster that feeds itself
 
-A route from a cluster back to itself gets **its own node**, drawn next to the
-cluster in the focus colour and carrying the loop's own metrics:
+A route from the **focus cluster** back to itself gets **its own node**, drawn
+next to it in the focus colour and carrying the loop's own metrics:
 
 ```text
                     (A)              A -> A, always drawn
@@ -514,6 +514,11 @@ and it is **never folded into a rest node** - a rest node only ever stands for
 other clusters. It is drawn whatever the top-k, the `min_value` or the direction
 settings are, because it is not a partner competing for a place; it is the
 cluster itself.
+
+Only the focus gets one. A partner further out that happens to loop on itself is
+drawn as an ordinary partner, without a loop of its own - the picture is about
+the cluster you asked for. Focus on that partner instead and its loop appears.
+A frame with no same-to-same rows is untouched: nothing extra is drawn.
 
 That keeps the accounting whole: for either side, the drawn partners plus the
 rest plus the loop come back to the cluster's total.

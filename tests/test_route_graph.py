@@ -962,3 +962,37 @@ def test_self_loops_can_still_be_a_ring_or_hidden():
 
     with pytest.raises(ValueError, match="self_loops must be one of"):
         graph.flow_subgraph("A1", self_loops="sometimes")
+
+
+def test_only_the_focus_cluster_gets_a_self_node():
+    # P1 loops on itself as well, but the picture is about A1
+    rows = [("A1", "A1", 500.0), ("P1", "P1", 400.0), ("P1", "A1", 300.0),
+            ("P2", "A1", 200.0), ("A1", "B1", 150.0)]
+    frame = pd.DataFrame([
+        {"pickup_cluster": p, "drop_cluster": d, "week_period": w,
+         "orders": orders, "requests": orders, "avg_distance": 3.0}
+        for p, d, orders in rows for w in ("weekday", "weekend")
+    ])
+    graph = RouteGraph.from_dataframe(frame, grain_cols=("week_period",),
+                                      weight_col="requests")
+
+    sub = graph.flow_subgraph("A1", upstream=3, downstream=3, metric="orders")
+    assert [d["cluster"] for _, d in sub.nodes(data=True) if d.get("is_self")] == ["A1"]
+
+    # P1 is still drawn as a partner, just without a loop of its own
+    assert "P1" in [d["cluster"] for _, d in sub.nodes(data=True)
+                    if d.get("side") == "source"]
+
+    # and focusing on P1 instead moves the loop with the focus
+    sub = graph.flow_subgraph("P1", upstream=3, downstream=3, metric="orders")
+    assert [d["cluster"] for _, d in sub.nodes(data=True) if d.get("is_self")] == ["P1"]
+
+
+def test_a_frame_with_no_self_loops_is_untouched():
+    graph = RouteGraph.from_dataframe(make_frame(), grain_cols=("week_period", "hour"),
+                                      weight_col="requests")
+    assert not any(graph.graph.has_edge(n, n) for n in graph.graph)
+
+    sub = graph.flow_subgraph("A1", upstream=3, downstream=3, metric="orders",
+                              rest=True)
+    assert not [n for n, d in sub.nodes(data=True) if d.get("is_self")]

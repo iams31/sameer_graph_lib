@@ -4,14 +4,16 @@ Some exports carry rows whose pickup and drop are the same cluster - a trip that
 starts and ends in the same place. That row is real, and it is often the largest
 single route the cluster has, so what the flow plot does with it matters.
 
-The loop gets its own node, drawn beside the cluster in the focus colour and
-carrying the loop's own metrics. It is:
+For the cluster you are looking at, the loop gets its own node, drawn beside it
+in the focus colour and carrying the loop's own metrics. It is:
 
 * never ranked against the real partners, so it costs no place in the top x
 * never folded into a rest node - a rest node only ever stands for other
   clusters
 * drawn whatever the top x or ``min_value`` happens to be, because it is not a
   partner competing for a place, it is the cluster itself
+* only for the focus - a partner further out that loops on itself is drawn as an
+  ordinary partner; focus on it instead and its loop appears
 
 which keeps the accounting whole: on either side, the drawn partners plus the
 rest plus the loop come back to the cluster's total.
