@@ -1,4 +1,3 @@
-"""Dominant route corridor extraction."""
 
 from __future__ import annotations
 
@@ -8,7 +7,6 @@ import networkx as nx
 
 
 class CorridorExtractor:
-    """Extract compact Dijkstra clusters that cover a target metric share."""
 
     def __init__(self, graph_or_affinity) -> None:
         self.graph = graph_or_affinity if isinstance(graph_or_affinity, nx.Graph) else graph_or_affinity.graph

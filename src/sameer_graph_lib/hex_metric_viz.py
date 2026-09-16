@@ -1,12 +1,3 @@
-"""Plots for :class:`~sameer_graph_lib.hex_metric_graph.HexMetricGraph`.
-
-Draws the real H3 hexagons shaded by a metric, optionally with the attachment
-edges on top, so the graph and the geography can be read together.
-
-Needs matplotlib::
-
-    pip install 'sameer-graph-lib[plot]'
-"""
 
 from __future__ import annotations
 
@@ -20,12 +11,6 @@ HAIRLINE = "#CBD2D9"
 
 
 def short_cell(cell, length: int = 4) -> str:
-    """A short label that actually distinguishes H3 cells.
-
-    Cell ids of one resolution share a long run of trailing ``f``, so the last
-    few characters are identical for every cell. Trimming that padding first
-    leaves the part that varies.
-    """
     text = str(cell)
     trimmed = text.rstrip("f")
     return (trimmed or text)[-length:]
@@ -34,7 +19,7 @@ def short_cell(cell, length: int = 4) -> str:
 def _require_matplotlib():
     try:
         import matplotlib.pyplot as plt
-    except ImportError as exc:  # pragma: no cover - import guard
+    except ImportError as exc:
         raise ImportError(
             "Plotting requires matplotlib: pip install 'sameer-graph-lib[plot]'"
         ) from exc
@@ -60,12 +45,6 @@ def plot_hex_metric(
     ax=None,
     **grain_values,
 ):
-    """Shade each H3 cell by one metric.
-
-    ``highlight`` outlines a subset of cells, which pairs with
-    :meth:`HexMetricGraph.corridor` to show the cells carrying most of the
-    volume. ``show_edges`` draws the graph's own edges between cell centres.
-    """
     plt = _require_matplotlib()
     from matplotlib.patches import Polygon
     import matplotlib.patches as mpatches
@@ -172,24 +151,12 @@ def plot_hex_steps(
     font_size: int = 8,
     **grain_values,
 ):
-    """One panel per cell joining the graph, labelled with that cell's value.
-
-    Replays the insertion in the order the cells were first seen, so each
-    panel shows the graph as it stood after that hex was added: the new cell
-    in red, the edges the attachment logic chose, and each cell's metric value
-    underneath it.
-
-        fig = hg.plot_steps(metric="orders")
-        fig.savefig("hex_steps.png", dpi=160, bbox_inches="tight")
-    """
     plt = _require_matplotlib()
     import networkx as nx
 
     from .affinity_graph import AffinityGraph
 
     metric = metric or hex_graph.value_metric
-    # always replay the real insertion order, so a cell that joined an existing
-    # graph is drawn joining it, not starting a new one
     order = list(hex_graph.tensors)
     wanted = order if cells is None else list(cells)
     unknown = [c for c in wanted if c not in hex_graph]
@@ -222,7 +189,7 @@ def plot_hex_steps(
                                                    count_increment=0, kind="adjacent")
 
         if cell not in drawn_set:
-            continue                                    # replayed, but not drawn
+            continue
         ax = panels[panel]
         panel += 1
 

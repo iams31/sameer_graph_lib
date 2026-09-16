@@ -1,15 +1,3 @@
-"""Work out which column is which, by asking or by suggesting.
-
-Column names differ from one export to the next, so nothing here assumes
-``pickup_cluster`` or ``week_period``. :func:`suggest_columns` proposes a
-mapping from the frame itself, and :func:`ask_columns` shows that proposal and
-lets you correct it before the graph is built.
-
-    from sameer_graph_lib import RouteExplorer
-
-    ex = RouteExplorer.ask(df)          # prompts, with the guesses pre-filled
-    print(RouteExplorer.preview(df))    # just the guesses, no prompt
-"""
 
 from __future__ import annotations
 
@@ -17,7 +5,7 @@ import sys
 
 try:
     import pandas as pd
-except ImportError as exc:  # pragma: no cover - import guard
+except ImportError as exc:
     raise ImportError(
         "Column selection requires pandas: pip install 'sameer-graph-lib[route]'"
     ) from exc
@@ -35,12 +23,6 @@ WEIGHT_HINTS = ("requests", "request", "pings", "ping", "trips", "sessions",
 
 
 def _first_hit(columns, hints, taken=()):
-    """First column matching a hint, whole words first.
-
-    Matching on raw substrings is too eager for short hints - ``to`` appears
-    inside ``operator`` - so a hint has to be a whole word in the name, and
-    only hints of four characters or more fall back to a substring match.
-    """
     for hint in hints:
         for column in columns:
             if column not in taken and hint in _words(column):
@@ -55,12 +37,6 @@ def _first_hit(columns, hints, taken=()):
 
 
 def suggest_speed_pair(candidates, length_metric=None, ride_time_metric=None):
-    """Guess which metrics are the distance and the duration.
-
-    ``speed`` is distance over time, so the schema needs to know which of your
-    columns those are. Without this, speed stays NaN on data that does not
-    happen to use the default names.
-    """
     length = length_metric or _first_hit(candidates, DISTANCE_HINTS)
     duration = ride_time_metric or _first_hit(candidates, DURATION_HINTS,
                                               taken=(length,))
@@ -68,11 +44,6 @@ def suggest_speed_pair(candidates, length_metric=None, ride_time_metric=None):
 
 
 def suggest_weight(candidates, weight_col=None):
-    """Guess which metric should weight the averages.
-
-    An average of averages is wrong unless it is weighted by how much each
-    route carried, so this looks for the volume column.
-    """
     return weight_col or _first_hit(candidates, WEIGHT_HINTS)
 
 
@@ -80,17 +51,6 @@ def suggest_columns(df, pickup_col=None, drop_col=None, grain_cols=None,
                     metrics=None, mean_metrics=None, sum_metrics=None,
                     length_metric=None, ride_time_metric=None,
                     weight_col=None) -> dict:
-    """Guess which columns are the ids, the grains and the metrics.
-
-    Anything passed in is kept as given; the rest is inferred from the frame.
-    Returns a dict with ``pickup_col``, ``drop_col``, ``grain_cols``,
-    ``metrics``, ``mean_metrics``, ``sum_metrics``, ``length_metric``,
-    ``ride_time_metric`` and ``weight_col``.
-
-    The sum/average split is a guess from the column names, which is exactly
-    the part worth checking: summing an ETA or a fill rate is meaningless, and
-    a name like ``eta`` gives nothing away.
-    """
     columns = list(df.columns)
     ids = suggest_ids(df)
     pickup = pickup_col or _first_hit(columns, PICKUP_HINTS) or (ids[0] if ids else None)
@@ -125,7 +85,6 @@ def suggest_columns(df, pickup_col=None, drop_col=None, grain_cols=None,
 
 
 def describe_columns(df, **overrides) -> str:
-    """A readable table of every column, its dtype and the role proposed."""
     proposal = suggest_columns(df, **overrides)
     roles = {}
     if proposal["pickup_col"]:
@@ -155,7 +114,6 @@ def describe_columns(df, **overrides) -> str:
 
 
 def _parse(answer, columns, default):
-    """Turn an answer into a column list: names, numbers, or blank for default."""
     answer = (answer or "").strip()
     if not answer:
         return list(default)
@@ -176,12 +134,6 @@ def _parse(answer, columns, default):
 
 
 def ask_columns(df, input_fn=None, output_fn=print, **overrides) -> dict:
-    """Show the proposal and let the caller correct it.
-
-    Answers may be column names or the numbers in the listing; blank keeps the
-    proposal and ``none`` clears it. With no interactive input available (a
-    script, a test, a CI run) the proposal is returned unchanged.
-    """
     proposal = suggest_columns(df, **overrides)
     columns = list(df.columns)
     interactive = input_fn is not None or (
@@ -203,14 +155,10 @@ def ask_columns(df, input_fn=None, output_fn=print, **overrides) -> dict:
         ("drop_col", "drop id column", proposal["drop_col"], True),
         ("grain_cols", "grain columns", proposal["grain_cols"], False),
         ("metrics", "metric columns", proposal["metrics"], False),
-        # the split matters: summing an ETA or a fill rate is meaningless
         ("mean_metrics", "which of those are averages (rest are summed)",
          proposal["mean_metrics"], False),
-        # speed is distance over time, so the schema has to know which is which
         ("length_metric", "distance metric (for speed)", proposal["length_metric"], True),
         ("ride_time_metric", "duration metric (for speed)", proposal["ride_time_metric"], True),
-        # every mean metric is weighted by this, so an average of averages is
-        # never taken; it is fixed once the tensors are built
         ("weight_col", "weight column (for averaging)", proposal["weight_col"], True),
     ]
     answers = dict(proposal)

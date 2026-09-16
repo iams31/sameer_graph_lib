@@ -1,24 +1,3 @@
-"""Stateless DataFrame plotting: multi-column, multi-axis, multi-group.
-
-Nothing here holds state - every function takes a DataFrame and returns a
-matplotlib ``Figure``, so the same call works in a notebook, a script or a
-test.
-
-Three ideas cover most of it:
-
-* ``mode`` decides how several columns share the canvas - ``grid`` (one panel
-  each), ``overlay`` (one axes, shared scale) or ``twin`` (one axes, one y-axis
-  per column, for columns whose scales differ).
-* ``group`` splits every series by a categorical column (``test`` vs
-  ``control``) and gives each level its own colour plus a legend entry.
-* ``kind`` picks the mark: ``line``, ``bar``, ``barh``, ``scatter``, ``area``,
-  ``step``, or a distribution mark (``hist``, ``kde``, ``box``, ``violin``,
-  ``ecdf``).
-
-Needs pandas, numpy and matplotlib::
-
-    pip install 'sameer-graph-lib[plot]' pandas
-"""
 
 from __future__ import annotations
 
@@ -27,14 +6,13 @@ from typing import Iterable, Sequence
 try:
     import numpy as np
     import pandas as pd
-except ImportError as exc:  # pragma: no cover - import guard
+except ImportError as exc:
     raise ImportError(
         "Plotter helpers require pandas and numpy: "
         "pip install 'sameer-graph-lib[route]'"
     ) from exc
 
 
-#: Colour-blind friendly default cycle used for groups and columns.
 PALETTE = [
     "#4C78A8", "#F58518", "#54A24B", "#E45756", "#72B7B2",
     "#B279A2", "#EECA3B", "#9D755D", "#FF9DA6", "#79706E",
@@ -48,7 +26,7 @@ ALL_KINDS = SERIES_KINDS + DISTRIBUTION_KINDS
 def _require_matplotlib():
     try:
         import matplotlib.pyplot as plt
-    except ImportError as exc:  # pragma: no cover - import guard
+    except ImportError as exc:
         raise ImportError(
             "Plotting requires matplotlib: pip install 'sameer-graph-lib[plot]'"
         ) from exc
@@ -80,7 +58,6 @@ def _clean(values) -> "np.ndarray":
 
 
 def group_levels(df, group, order=None, max_groups=None) -> list:
-    """Ordered, de-duplicated levels of a grouping column."""
     if group is None:
         return [None]
     if group not in df.columns:
@@ -99,21 +76,12 @@ def group_levels(df, group, order=None, max_groups=None) -> list:
 
 
 def color_map(levels, palette=None) -> dict:
-    """Stable ``level -> colour`` mapping so repeated plots stay comparable."""
     colors = list(palette or PALETTE)
     return {level: colors[index % len(colors)] for index, level in enumerate(levels)}
 
 
-# --------------------------------------------------------------------------- #
-# distribution maths (no scipy required)
-# --------------------------------------------------------------------------- #
 def kde_curve(values, bandwidth=None, points: int = 256, cut: float = 3.0,
               max_samples: int = 20000, seed: int = 0):
-    """Gaussian KDE on a fixed grid, returned as ``(grid, density)``.
-
-    Uses a Silverman bandwidth and subsamples very large inputs so the call
-    stays cheap; returns ``None`` when there is not enough data.
-    """
     v = _clean(values)
     if v.size < 2:
         return None
@@ -135,7 +103,6 @@ def kde_curve(values, bandwidth=None, points: int = 256, cut: float = 3.0,
 
 
 def ecdf_points(values):
-    """Empirical CDF as ``(sorted values, cumulative share)``."""
     v = np.sort(_clean(values))
     if v.size == 0:
         return None
@@ -143,11 +110,6 @@ def ecdf_points(values):
 
 
 def describe_distribution(df, column, group=None, order=None, percentiles=(0.01, 0.25, 0.5, 0.75, 0.99)):
-    """Distribution stats for a column, optionally one row per group.
-
-    Includes the usual moments plus missing counts, IQR outlier share and the
-    IQR fences, which is normally what you want before trusting a mean.
-    """
     _check_columns(df, [column])
     levels = group_levels(df, group, order=order)
 
@@ -189,12 +151,8 @@ def describe_distribution(df, column, group=None, order=None, percentiles=(0.01,
     return frame
 
 
-# --------------------------------------------------------------------------- #
-# low level marks
-# --------------------------------------------------------------------------- #
 def _draw_series(ax, x, y, kind, label=None, color=None, alpha=None, marker=None,
                  linewidth=1.8, width=0.8, offset=0.0, **kwargs):
-    """Draw one series with the requested mark onto an existing axes."""
     x = np.asarray(x)
     y = np.asarray(y, dtype=float)
     if kind == "line":
@@ -222,7 +180,6 @@ def _draw_series(ax, x, y, kind, label=None, color=None, alpha=None, marker=None
 
 
 def _shared_bins(arrays, bins):
-    """Common bin edges so grouped histograms are comparable."""
     pool = np.concatenate([a for a in arrays if a.size]) if arrays else np.array([])
     if pool.size == 0:
         return bins
@@ -234,7 +191,6 @@ def _shared_bins(arrays, bins):
 def _draw_distribution(ax, series, kind="hist", bins=30, density=False,
                        alpha=None, linewidth=2.0, fill=True, rug=False,
                        show_mean=False, **kwargs):
-    """Draw ``series`` (a list of ``(label, colour, values)``) as distributions."""
     arrays = [(label, color, _clean(values)) for label, color, values in series]
     arrays = [item for item in arrays if item[2].size]
     if not arrays:
@@ -314,7 +270,6 @@ def _draw_distribution(ax, series, kind="hist", bins=30, density=False,
 
 
 def _axis_positions(values, categorical):
-    """Return plotting positions plus tick labels for an x axis."""
     if not categorical:
         return np.asarray(values, dtype=float), None, None
     categories = list(pd.unique(pd.Series(values)))
@@ -340,9 +295,6 @@ def _aggregate(df, x, ycols, group, agg):
     return df.groupby(keys, dropna=False, sort=True)[columns].agg(agg).reset_index()
 
 
-# --------------------------------------------------------------------------- #
-# main entry points
-# --------------------------------------------------------------------------- #
 def plot_columns(
     df,
     y,
@@ -372,31 +324,6 @@ def plot_columns(
     axes=None,
     **plot_kwargs,
 ):
-    """Plot any number of columns, in panels, overlaid, or on twin y-axes.
-
-    Parameters
-    ----------
-    y:
-        One column name or a list of them.
-    x:
-        Column for the x axis. ``None`` uses the row order.
-    group:
-        Categorical column (``variant``, ``city``, ...). Every level gets its
-        own colour and legend entry, so ``test`` vs ``control`` compares
-        directly.
-    kind:
-        ``line``, ``step``, ``area``, ``bar``, ``barh``, ``scatter``, or a
-        distribution mark: ``hist``, ``kde``, ``box``, ``violin``, ``ecdf``
-        (those ignore ``x`` and describe each column instead).
-    mode:
-        ``grid`` gives one panel per column, ``overlay`` puts them on one axes,
-        ``twin`` gives each column its own y-axis on a shared x axis.
-    agg:
-        Optional aggregation (``mean``, ``sum``, ...) applied per x and group
-        before plotting, so raw row-level frames can be charted directly.
-
-    Returns the matplotlib ``Figure``.
-    """
     plt = _require_matplotlib()
 
     ycols = _check_columns(df, _as_columns(y))
@@ -432,7 +359,6 @@ def plot_columns(
             out.append((label, color, subset))
         return out
 
-    # ---- build the axes ------------------------------------------------ #
     if mode == "grid":
         panels = len(ycols)
         ncols = max(1, min(ncols, panels))
@@ -535,9 +461,7 @@ def plot_columns(
         for handle, label in zip(*ax.get_legend_handles_labels()):
             handles_seen.setdefault(label, handle)
 
-    # ---- legend and title ---------------------------------------------- #
     show_legend = bool(legend and handles_seen and kind not in ("box", "violin"))
-    # one shared legend under the title for panels, an in-axes legend otherwise
     shared_legend = show_legend and mode == "grid" and (group is not None or len(ycols) > 1)
     if show_legend and not shared_legend:
         target_axes[0].legend(handles_seen.values(), handles_seen.keys(),
@@ -561,17 +485,14 @@ def plot_columns(
 
 
 def plot_multi_axis(df, y, x=None, group=None, kind="line", **kwargs):
-    """Several columns on one chart, each with its own y-axis (different scales)."""
     return plot_columns(df, y=y, x=x, group=group, kind=kind, mode="twin", **kwargs)
 
 
 def plot_grid(df, y, x=None, group=None, kind="line", **kwargs):
-    """One panel per column, groups overlaid inside each panel."""
     return plot_columns(df, y=y, x=x, group=group, kind=kind, mode="grid", **kwargs)
 
 
 def plot_overlay(df, y, x=None, group=None, kind="line", **kwargs):
-    """All columns on a single shared axes."""
     return plot_columns(df, y=y, x=x, group=group, kind=kind, mode="overlay", **kwargs)
 
 
@@ -596,11 +517,6 @@ def plot_distribution(
     ax=None,
     **plot_kwargs,
 ):
-    """Check the distribution of one column, split by group when asked.
-
-    ``show_stats`` prints count / mean / median / std / skew in the corner so
-    the shape and the numbers are visible together.
-    """
     plt = _require_matplotlib()
     _check_columns(df, [column])
     levels = group_levels(df, group, order=order)
@@ -657,11 +573,6 @@ def compare_distributions(
     title: str | None = None,
     **kwargs,
 ):
-    """Overlay one variable's distribution for every group, one colour each.
-
-    ``with_box`` adds a companion box plot under the curves, which makes the
-    medians and spreads easy to read off next to the shapes.
-    """
     plt = _require_matplotlib()
     _check_columns(df, [column, group])
 
@@ -681,7 +592,7 @@ def compare_distributions(
     data = [_clean(df[df[group] == level][column]) for level in levels]
     try:
         artists = axes[1].boxplot(data, orientation="horizontal", patch_artist=True, widths=0.6)
-    except TypeError:  # matplotlib below 3.10 only understands vert=
+    except TypeError:
         artists = axes[1].boxplot(data, vert=False, patch_artist=True, widths=0.6)
     for patch, level in zip(artists["boxes"], levels):
         patch.set_facecolor(colors[level])
@@ -689,7 +600,7 @@ def compare_distributions(
         patch.set_edgecolor("#2c3e50")
     axes[1].set_yticks(range(1, len(levels) + 1))
     axes[1].set_yticklabels([str(level) for level in levels])
-    axes[1].invert_yaxis()   # keep the group order matching the legend above
+    axes[1].invert_yaxis()
     axes[1].set_xlabel(str(column))
     axes[1].grid(True, axis="x", linewidth=0.4, alpha=0.3)
 
@@ -709,11 +620,6 @@ def compare_groups(
     normalize_to=None,
     **kwargs,
 ):
-    """Aggregate columns per group and chart the comparison (test vs control).
-
-    ``normalize_to`` expresses every group as a share of one baseline level,
-    which is usually what an A/B readout wants.
-    """
     ycols = _check_columns(df, _as_columns(y))
     _check_columns(df, [group])
     if x is None:
@@ -732,7 +638,6 @@ def compare_groups(
 
 
 def group_stats(df, y, group, agg=("count", "mean", "median", "std")):
-    """Tidy per-group aggregates for the given columns."""
     ycols = _check_columns(df, _as_columns(y))
     _check_columns(df, [group])
     table = df.groupby(group, dropna=False)[ycols].agg(list(agg))
@@ -749,7 +654,6 @@ def plot_correlation(
     title: str | None = None,
     ax=None,
 ):
-    """Correlation heatmap for the numeric columns you pass."""
     plt = _require_matplotlib()
     frame = df[_check_columns(df, _as_columns(columns))] if columns else df.select_dtypes("number")
     matrix = frame.corr(method=method)

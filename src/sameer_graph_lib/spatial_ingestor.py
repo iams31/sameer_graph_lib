@@ -1,4 +1,3 @@
-"""Input normalization utilities for H3 route data."""
 
 from __future__ import annotations
 
@@ -17,14 +16,12 @@ Coordinate = Tuple[float, float]
 
 
 class SpatialIngestor:
-    """Convert raw spatial inputs into contiguous H3 chains."""
 
     def __init__(self, resolution: int = 9, strict: bool = True) -> None:
         self.resolution = int(resolution)
         self.strict = strict
 
     def ingest_h3_array(self, hex_list: Iterable[str]) -> List[str]:
-        """Validate and gap-fill an explicit list of H3 cells."""
         return self.normalize_h3_chain(list(hex_list))
 
     def ingest_latlng_sequence(
@@ -32,7 +29,6 @@ class SpatialIngestor:
         coords: Sequence[Coordinate],
         resolution: int | None = None,
     ) -> List[str]:
-        """Convert a lat/lng sequence into a contiguous H3 route."""
         res = self.resolution if resolution is None else int(resolution)
         cells = [latlng_to_cell(float(lat), float(lng), res) for lat, lng in coords]
         return self.normalize_h3_chain(cells)
@@ -43,14 +39,12 @@ class SpatialIngestor:
         resolution: int | None = None,
         precision: int = 5,
     ) -> List[str]:
-        """Decode a Google encoded polyline and convert it to H3 cells."""
         return self.ingest_latlng_sequence(
             decode_polyline(polyline_str, precision=precision),
             resolution=resolution,
         )
 
     def normalize_h3_chain(self, hexes: Sequence[str]) -> List[str]:
-        """Remove consecutive duplicates and fill gaps between adjacent samples."""
         cells = self._dedupe_consecutive([str(h) for h in hexes if h])
         if not cells:
             return []
@@ -92,7 +86,6 @@ class SpatialIngestor:
             return self._fallback_bridge_cells(start, end)
 
     def _fallback_bridge_cells(self, start: str, end: str) -> List[str]:
-        """Approximate a bridge when h3 cannot produce an exact grid path."""
         if start == end:
             return [start]
 
@@ -134,7 +127,6 @@ class SpatialIngestor:
 
 
 def decode_polyline(polyline_str: str, precision: int = 5) -> List[Coordinate]:
-    """Decode a Google encoded polyline string without extra dependencies."""
     coordinates: List[Coordinate] = []
     index = 0
     lat = 0

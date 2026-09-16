@@ -1,4 +1,3 @@
-"""Core H3 affinity graph implementation."""
 
 from __future__ import annotations
 
@@ -14,7 +13,6 @@ from .spatial_ingestor import SpatialIngestor
 
 
 class AffinityGraph:
-    """NetworkX-backed graph for H3 route affinity analysis."""
 
     def __init__(
         self,
@@ -62,7 +60,6 @@ class AffinityGraph:
         return [node for node, dist in distances if dist == min_dist], min_dist
 
     def add_hex(self, h3_hex: str, value: float = 0.0, reroute_edges: bool = True) -> None:
-        """Add one H3 cell and attach it to all nearest existing cells."""
         self._validate_hex(h3_hex)
         existing_nodes = list(self.graph.nodes)
         was_new = self._upsert_node(h3_hex, value=value)
@@ -124,7 +121,6 @@ class AffinityGraph:
         value: float = 0.0,
         route_id: str | None = None,
     ) -> List[str]:
-        """Normalize a route hex array, then insert each hex with ``add_hex``."""
         return self.add_hex_array(route_hexes, value=value, route_id=route_id)
 
     def add_hex_array(
@@ -133,7 +129,6 @@ class AffinityGraph:
         value: float = 0.0,
         route_id: str | None = None,
     ) -> List[str]:
-        """Normalize an H3 array and add it using the original per-node procedure."""
         route = self.ingestor.ingest_h3_array(hex_array)
         if not route:
             self.insertion_log.append({"action": "empty_hex_array", "route_id": route_id})
@@ -177,7 +172,6 @@ class AffinityGraph:
     add_polyline = add_encoded_polyline
 
     def get_route_affinity_score(self, route_a: Sequence[str], route_b: Sequence[str]) -> float:
-        """Return Jaccard similarity of two normalized H3 routes."""
         set_a = set(self.ingestor.ingest_h3_array(route_a))
         set_b = set(self.ingestor.ingest_h3_array(route_b))
         union = set_a | set_b
@@ -211,12 +205,6 @@ class AffinityGraph:
         use_values: bool = False,
         top_k_centers: int | None = None,
     ) -> List[str]:
-        """Return the most compact Dijkstra cluster covering the requested metric share.
-
-        By default this runs Dijkstra from every node and picks the center with
-        the smallest accumulated path cost. ``top_k_centers`` can be supplied
-        only when you intentionally want a faster approximate scan.
-        """
         if not self.graph.nodes:
             return []
         if len(self.graph.nodes) <= 2:
@@ -315,7 +303,6 @@ class AffinityGraph:
         return distances, sum(distances)
 
     def remove_hex(self, h3_hex: str) -> bool:
-        """Remove a node and adjust aggregate counters."""
         if h3_hex not in self.graph:
             return False
 
@@ -332,7 +319,6 @@ class AffinityGraph:
         count: int | None = None,
         value: float | None = None,
     ) -> None:
-        """Edit an existing node's count and/or value while keeping totals aligned."""
         if h3_hex not in self.graph:
             raise KeyError(f"Unknown H3 cell: {h3_hex}")
 
@@ -415,7 +401,6 @@ class AffinityGraph:
         show_edge_weights: bool = True,
         show_labels: bool = True,
     ):
-        """Plot the graph using H3 longitude/latitude positions for QC."""
         import matplotlib.pyplot as plt
         import matplotlib.patches as mpatches
 
@@ -489,7 +474,6 @@ class AffinityGraph:
         figsize: tuple[float, float] = (16, 5),
         value: float = 0.0,
     ):
-        """Visualize your original insertion and edge-restructuring procedure."""
         import matplotlib.pyplot as plt
 
         if not hex_list:
@@ -586,7 +570,6 @@ class AffinityGraph:
         figsize: tuple[float, float] = (14, 10),
         show_edge_weights: bool = True,
     ):
-        """Compatibility plotting method."""
         return self.visualize_graph(
             title=title,
             highlight_hexes=highlight_hexes,
@@ -604,10 +587,6 @@ class AffinityGraph:
         show_labels: bool = True,
         label_full_hex: bool = False,
     ):
-        """Plot H3 cells as real geospatial hex polygons.
-
-        If ``cells`` is omitted, all graph nodes are plotted.
-        """
         from .plotting import plot_h3_cells
 
         target_cells = list(self.graph.nodes) if cells is None else cells
@@ -629,7 +608,6 @@ class AffinityGraph:
         figsize: tuple[float, float] = (16, 16),
         basemap: bool = True,
     ):
-        """Plot graph H3 cells through GeoPandas with optional Contextily basemap."""
         from .plotting import plot_h3_cells_map
 
         target_cells = list(self.graph.nodes) if cells is None else cells
@@ -642,21 +620,18 @@ class AffinityGraph:
         )
 
     def get_latlng(self, cells: Sequence[str] | str | None = None) -> list[tuple[float, float]]:
-        """Return graph H3 centers as ``(lat, lng)`` tuples."""
         from .geometry import get_latlng
 
         target_cells = list(self.graph.nodes) if cells is None else cells
         return get_latlng(target_cells)
 
     def convex_hull(self, cells: Sequence[str] | str | None = None):
-        """Return a Shapely convex hull around graph H3 cell centers."""
         from .geometry import h3_convex_hull
 
         target_cells = list(self.graph.nodes) if cells is None else cells
         return h3_convex_hull(target_cells)
 
     def convex_hull_geojson(self, cells: Sequence[str] | str | None = None) -> dict | None:
-        """Return graph H3 center convex hull as GeoJSON-like mapping."""
         from .geometry import h3_convex_hull_geojson
 
         target_cells = list(self.graph.nodes) if cells is None else cells

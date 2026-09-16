@@ -1,21 +1,3 @@
-"""Reachability and path search over a :class:`~sameer_graph_lib.route_graph.RouteGraph`.
-
-Answers questions of the shape *which clusters can reach A within two hours,
-and by what route* - a cost accumulated along the path, a cap on the number of
-hops, and a test every hop has to pass.
-
-Three constraints compose, and they are different things:
-
-* ``budget`` caps the **accumulated** cost along the whole path, so a two hour
-  limit is ``budget=120`` when durations are minutes.
-* ``max_hops`` / ``min_hops`` cap the **length** of the path.
-* ``edge_filter`` is the per-hop test from :meth:`RouteGraph.keep`, so a route
-  that fails it is never crossed.
-
-The search is a label-setting Dijkstra over ``(cluster, hops)`` states, which
-is what keeps both the cost cap and the hop cap exact: a cheaper route that
-takes too many hops cannot hide a dearer one that fits.
-"""
 
 from __future__ import annotations
 
@@ -24,7 +6,7 @@ import heapq
 try:
     import numpy as np
     import pandas as pd
-except ImportError as exc:  # pragma: no cover - import guard
+except ImportError as exc:
     raise ImportError(
         "Path search requires pandas and numpy: pip install 'sameer-graph-lib[route]'"
     ) from exc
@@ -36,7 +18,6 @@ def _edge_cost(graph, u, v, metric, grain_values) -> float:
 
 
 def _neighbours(graph, node, direction):
-    """(partner, u, v) triples for one step, in the direction of travel."""
     inward = direction in ("in", "to", "sources", "upstream")
     for partner, u, v, _ in graph.incident(node, "in" if inward else "out"):
         yield partner, u, v
@@ -44,15 +25,12 @@ def _neighbours(graph, node, direction):
 
 def search(graph, start, direction="out", cost=None, budget=None, max_hops=3,
            min_hops=1, edge_filter=None, node_filter=None, **grain_values) -> dict:
-    """Cheapest qualifying path from ``start`` to every cluster it can reach.
-
-    ``direction="out"`` travels along the arrows (where you can get to from
-    ``start``); ``"in"`` travels against them (who can get to ``start``).
-
-    Returns ``{cluster: {"cost", "hops", "path"}}``, where ``path`` always runs
-    in real travel order, so an inbound search gives ``[origin, ..., start]``.
-    """
     cost = cost or graph.schema.ride_time_metric
+    if cost is None:
+        raise ValueError(
+            "No cost metric: pass cost= (or name ride_time_metric= when building "
+            "the graph) so the search knows what to accumulate along a path"
+        )
     if start not in graph.graph:
         raise KeyError(f"Unknown cluster: {start!r}")
     if max_hops is not None and max_hops < 1:
@@ -75,7 +53,7 @@ def search(graph, start, direction="out", cost=None, budget=None, max_hops=3,
     while queue:
         spent, hops, node, path = heapq.heappop(queue)
         if spent > best_state.get((node, hops), np.inf):
-            continue                                  # a cheaper label won already
+            continue
         if hops >= min_hops and node != start:
             known = found.get(node)
             if known is None or spent < known["cost"]:
@@ -85,11 +63,11 @@ def search(graph, start, direction="out", cost=None, budget=None, max_hops=3,
             continue
 
         for partner, u, v in _neighbours(source, node, direction):
-            if partner in path:                       # simple paths only
+            if partner in path:
                 continue
             step = _edge_cost(source, u, v, cost, grain_values)
             if np.isnan(step) or step < 0:
-                continue                              # unusable hop
+                continue
             total = spent + step
             if budget is not None and total > budget:
                 continue
@@ -102,8 +80,12 @@ def search(graph, start, direction="out", cost=None, budget=None, max_hops=3,
 
 
 def reach_frame(graph, start, direction="out", cost=None, metrics=(), **kwargs):
-    """:func:`search` as a DataFrame, one row per reachable cluster."""
     cost = cost or graph.schema.ride_time_metric
+    if cost is None:
+        raise ValueError(
+            "No cost metric: pass cost= (or name ride_time_metric= when building "
+            "the graph) so the search knows what to accumulate along a path"
+        )
     grain = {k: v for k, v in kwargs.items() if k in graph.schema.grain_names}
     found = search(graph, start, direction=direction, cost=cost, **kwargs)
 
@@ -126,7 +108,6 @@ def reach_frame(graph, start, direction="out", cost=None, metrics=(), **kwargs):
 
 
 def path_total(graph, path, metric, **grain_values) -> float:
-    """Sum one metric along a path. NaN if any hop is missing it."""
     values = [graph.edge_value(u, v, metric, **grain_values)
               for u, v in zip(path, path[1:])]
     return float(np.sum(values)) if values and not np.isnan(values).any() else np.nan
@@ -134,12 +115,12 @@ def path_total(graph, path, metric, **grain_values) -> float:
 
 def paths(graph, source, target, cost=None, budget=None, max_hops=3, min_hops=1,
           edge_filter=None, node_filter=None, metrics=(), **grain_values):
-    """Every qualifying simple path from ``source`` to ``target``.
-
-    Unlike :func:`search`, which keeps only the cheapest way to each cluster,
-    this enumerates the alternatives so they can be compared.
-    """
     cost = cost or graph.schema.ride_time_metric
+    if cost is None:
+        raise ValueError(
+            "No cost metric: pass cost= (or name ride_time_metric= when building "
+            "the graph) so the search knows what to accumulate along a path"
+        )
     for cluster in (source, target):
         if cluster not in graph.graph:
             raise KeyError(f"Unknown cluster: {cluster!r}")
@@ -158,7 +139,7 @@ def paths(graph, source, target, cost=None, budget=None, max_hops=3, min_hops=1,
     def step(node, path, spent):
         if node == target and len(path) - 1 >= min_hops:
             out.append((list(path), spent, len(path) - 1))
-            return                                    # simple paths end here
+            return
         if max_hops is not None and len(path) - 1 >= max_hops:
             return
         for partner, u, v in _neighbours(walk, node, "out"):
@@ -188,14 +169,14 @@ def paths(graph, source, target, cost=None, budget=None, max_hops=3, min_hops=1,
 
 
 def reach_subgraph(graph, start, direction="out", cost=None, **kwargs):
-    """The cheapest-path tree as a DiGraph, shaped for :func:`plot_reach`.
-
-    Nodes carry ``level`` (hops from the start, negative for an inbound search
-    so sources sit on the left) and ``cost``; edges carry the hop cost.
-    """
     import networkx as nx
 
     cost = cost or graph.schema.ride_time_metric
+    if cost is None:
+        raise ValueError(
+            "No cost metric: pass cost= (or name ride_time_metric= when building "
+            "the graph) so the search knows what to accumulate along a path"
+        )
     grain = {k: v for k, v in kwargs.items() if k in graph.schema.grain_names}
     found = search(graph, start, direction=direction, cost=cost, **kwargs)
     inward = direction in ("in", "to", "sources", "upstream")

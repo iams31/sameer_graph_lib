@@ -1,14 +1,3 @@
-"""Visualization helpers for :class:`~sameer_graph_lib.route_graph.RouteGraph`.
-
-The headline function is :func:`plot_flow`: pick one or more focus clusters and
-it draws where their orders come from (upstream, to the left) and where they go
-(downstream, to the right), keeping only the top partners you asked for at each
-level.
-
-All functions need matplotlib::
-
-    pip install 'sameer-graph-lib[plot]'
-"""
 
 from __future__ import annotations
 
@@ -16,20 +5,20 @@ from typing import Sequence
 
 import numpy as np
 
-SOURCE_COLOR = "#4C78A8"    # muted steel blue - clusters that feed the focus
-DROP_COLOR = "#4E9F76"      # muted green - clusters the focus feeds
-FOCUS_COLOR = "#B3473F"     # muted brick - the focus itself
-CROSS_COLOR = "#9AA5AD"     # grey - routes between selected clusters
+SOURCE_COLOR = "#4C78A8"
+DROP_COLOR = "#4E9F76"
+FOCUS_COLOR = "#B3473F"
+CROSS_COLOR = "#9AA5AD"
 
-INK = "#1F2933"             # text
-MUTED_INK = "#7B8794"       # secondary text
-HAIRLINE = "#CBD2D9"        # table and node borders
+INK = "#1F2933"
+MUTED_INK = "#7B8794"
+HAIRLINE = "#CBD2D9"
 
 
 def _require_matplotlib():
     try:
         import matplotlib.pyplot as plt
-    except ImportError as exc:  # pragma: no cover - import guard
+    except ImportError as exc:
         raise ImportError(
             "Route plotting requires matplotlib: pip install 'sameer-graph-lib[plot]'"
         ) from exc
@@ -37,7 +26,6 @@ def _require_matplotlib():
 
 
 def _fade(color: str, depth: int, max_depth: int) -> str:
-    """Lighten a colour as the hop distance from the focus grows."""
     import matplotlib.colors as mcolors
 
     rgb = np.array(mcolors.to_rgb(color))
@@ -48,7 +36,6 @@ def _fade(color: str, depth: int, max_depth: int) -> str:
 
 
 def _tint(color: str, amount: float = 0.72) -> str:
-    """Blend a colour towards white, for fills that sit under dark text."""
     import matplotlib.colors as mcolors
 
     rgb = np.array(mcolors.to_rgb(color))
@@ -56,7 +43,6 @@ def _tint(color: str, amount: float = 0.72) -> str:
 
 
 def _scale(values, low: float, high: float):
-    """Min-max scale a list of possibly-NaN values into [low, high]."""
     arr = np.array([np.nan if v is None else float(v) for v in values], dtype=float)
     if arr.size == 0:
         return arr
@@ -79,7 +65,6 @@ def _short(label, limit=None) -> str:
 
 
 def _metric_list(value) -> list:
-    """Accept a single metric name or a sequence of them."""
     if value is None:
         return []
     if isinstance(value, str):
@@ -88,7 +73,6 @@ def _metric_list(value) -> list:
 
 
 def _auto_fmt(value: float) -> str:
-    """Pick a sane number format so 62,709 and 0.281 can share one table."""
     size = abs(value)
     if size >= 1000:
         return "{:,.0f}"
@@ -100,7 +84,6 @@ def _auto_fmt(value: float) -> str:
 
 
 def _format(value, fmt=None, metric=None) -> str:
-    """Format one metric value. ``fmt`` may be a string, a per-metric dict, or None."""
     if isinstance(fmt, dict):
         fmt = fmt.get(metric)
     if value is None:
@@ -115,11 +98,6 @@ def _format(value, fmt=None, metric=None) -> str:
 
 def metric_table(rows, key_width=0, value_width=0, header=None, show_names=True,
                  rule: bool = True) -> str:
-    """Lay metric rows out as a monospace table block.
-
-    ``rows`` is ``[(metric name, formatted value), ...]``. Widths are usually
-    passed in so that every node (or every edge) in one figure lines up.
-    """
     key_width = max([key_width] + [len(k) for k, _ in rows]) if rows else key_width
     value_width = max([value_width] + [len(v) for _, v in rows]) if rows else value_width
     body = [f"{k.ljust(key_width)}  {v.rjust(value_width)}" if show_names else v.rjust(value_width)
@@ -135,7 +113,6 @@ def metric_table(rows, key_width=0, value_width=0, header=None, show_names=True,
 
 
 def _column_widths(all_rows) -> tuple[int, int]:
-    """Widest metric name and widest value across every table in one figure."""
     key_width = value_width = 0
     for rows in all_rows:
         for key, value in rows:
@@ -145,17 +122,11 @@ def _column_widths(all_rows) -> tuple[int, int]:
 
 
 def _table_rows(values, metrics, value_format, name_len=None):
-    """Zip metric names with formatted values, ready for :func:`metric_table`."""
     return [(_short(metric, name_len), _format(value, value_format, metric))
             for metric, value in zip(metrics, values)]
 
 
 def flow_layout(sub, level_gap: float = 2.6, spacing: float = 1.0) -> dict:
-    """Layered positions: upstream on the left, focus at 0, downstream right.
-
-    Nodes inside a level are ordered by the average position of the neighbours
-    already placed, which keeps the number of crossing edges low.
-    """
     levels: dict[int, list] = {}
     for node, data in sub.nodes(data=True):
         levels.setdefault(int(data.get("level", 0)), []).append(node)
@@ -181,7 +152,6 @@ def flow_layout(sub, level_gap: float = 2.6, spacing: float = 1.0) -> dict:
 
 
 def geo_layout(nodes) -> dict:
-    """Longitude/latitude positions for clusters that are valid H3 cells."""
     from ._h3 import cell_to_latlng, is_valid_cell
 
     pos = {}
@@ -196,7 +166,6 @@ def geo_layout(nodes) -> dict:
 
 def _auto_figsize(sub, node_metrics, edge_metrics, font_size,
                   limits=(12.0, 7.0, 40.0, 34.0)) -> tuple[float, float]:
-    """Figure size that leaves room for every metric table at its font size."""
     counts: dict[int, int] = {}
     for _, data in sub.nodes(data=True):
         level = int(data.get("level", 0))
@@ -204,7 +173,7 @@ def _auto_figsize(sub, node_metrics, edge_metrics, font_size,
     levels = max(len(counts), 1)
     busiest = max(counts.values(), default=1)
 
-    char = font_size * 0.62 / 72.0                      # inches per character
+    char = font_size * 0.62 / 72.0
     node_chars = max((len(m) for m in node_metrics), default=8) + 10
     edge_chars = max((len(m) for m in edge_metrics), default=8) + 10
     column = (node_chars + edge_chars) * char + 1.4
@@ -228,6 +197,7 @@ def plot_flow(
     rank_by: str = "edge",
     node_direction: str = "out",
     mirror: bool = True,
+    rest: bool = False,
     min_value: float | None = None,
     edge_filter=None,
     node_filter=None,
@@ -265,50 +235,6 @@ def plot_flow(
     legend_labels=None,
     **grain_values,
 ):
-    """Plot the top inbound and outbound clusters around one or more focus nodes.
-
-    Parameters
-    ----------
-    focus:
-        A cluster id, or a list of them.
-    upstream, downstream:
-        Top-k per hop. ``5`` keeps the top 5 direct partners; ``[5, 3, 2]``
-        keeps the top 5, then the top 3 for each of those, then the top 2.
-        Use ``0`` or ``None`` to switch a direction off.
-    metric:
-        The variable used to rank partners, e.g. ``orders``, ``requests``,
-        ``speed``, ``avg_distance``, ``count``. Defaults to the schema's
-        first sum metric.
-    node_metrics, edge_metrics:
-        Variables to *show*. Pass a list to print several per node or per edge;
-        they are laid out as a small aligned table. Defaults to the ranking
-        metric. (``node_metric``/``edge_metric`` are accepted as aliases.)
-    size_metric:
-        Variable behind the node sizes. Defaults to the first node metric.
-    mirror:
-        Draw a cluster that is on both sides twice, once per side, so the
-        figure stays left-to-right. Off, the cluster is claimed by whichever
-        side reached it first and the other side's routes point backwards.
-    node_direction:
-        Which side of a cluster the node tables measure. ``"out"`` (the
-        default) is the orders it sends, so the number reads as *what
-        originates here*; ``"in"`` is what it receives, ``"both"`` their sum.
-    value_format:
-        ``None`` picks a format per value, or pass one format string for all
-        metrics, or a ``{metric: format}`` dict.
-    rank_by:
-        ``"edge"`` keeps the biggest routes at each hop, ``"node"`` keeps the
-        biggest clusters.
-    edge_filter, node_filter:
-        Absolute tests applied before walking, e.g.
-        ``edge_filter={"orders": 500, "speed": (">", 0.25)}``. Routes and
-        clusters that fail are not traversed at all, so the top-k at each hop
-        is picked from what survives.
-    grain_values:
-        Grain filters such as ``hour=[8, 9, 10]`` or ``week_period="weekday"``.
-
-    Returns the matplotlib ``Figure``.
-    """
     plt = _require_matplotlib()
     import matplotlib.patches as mpatches
     import networkx as nx
@@ -325,12 +251,11 @@ def plot_flow(
         focus, upstream=upstream, downstream=downstream, metric=metric,
         per_parent=per_parent, rank_by=rank_by, min_value=min_value,
         edge_filter=edge_filter, node_filter=node_filter, mirror=mirror,
-        include_cross_edges=include_cross_edges, **grain_values,
+        rest=rest, include_cross_edges=include_cross_edges, **grain_values,
     )
     if sub.number_of_nodes() == 0:
         raise ValueError("Nothing to plot: the expansion selected no clusters")
     if sub.number_of_edges() == 0 and subgraph is None:
-        # a caller that built its own subgraph warns in its own words
         import warnings
 
         warnings.warn(
@@ -351,8 +276,6 @@ def plot_flow(
         raise ValueError("layout must be one of: layered, geo, spring")
 
     if figsize is None:
-        # size the canvas from what has to fit: one column per level, one row
-        # per node in the busiest level, each carrying a table of n metrics
         figsize = _auto_figsize(sub, node_metric_names, edge_metric_names, table_font_size)
 
     if ax is None:
@@ -362,7 +285,6 @@ def plot_flow(
 
     max_depth = max((abs(int(d.get("level", 0))) for _, d in sub.nodes(data=True)), default=1)
 
-    # ---- node styling -------------------------------------------------- #
     nodes = list(sub.nodes)
 
     if node_direction not in ("in", "out", "both"):
@@ -371,13 +293,30 @@ def plot_flow(
     def cluster_of(node):
         return sub.nodes[node].get("cluster", node)
 
+    rest_cache: dict = {}
+
     def node_value(node, name):
         if node_values is not None and name in node_values.get(node, {}):
             return node_values[node][name]
+        data = sub.nodes[node]
+        if data.get("is_rest"):
+            if name == "count":
+                return float(data.get("routes", 0))
+            if node not in rest_cache:
+                rest_cache[node] = graph.clusters_summary(
+                    data["partners"], direction=node_direction, **grain_values)
+            return float(rest_cache[node].get(name, np.nan))
         if name == "count":
             return float(sub.degree(node))
         return graph.node_value(cluster_of(node), metric=name,
                                 direction=node_direction, **grain_values)
+
+    def edge_value(u, v, name):
+        carried = sub[u][v].get("metrics")
+        if carried is not None:
+            return float(carried.get(name, np.nan)) if name != "count" else float(
+                sub[u][v].get("routes", 0))
+        return graph.edge_value(cluster_of(u), cluster_of(v), name, **grain_values)
 
     node_table_values = {node: [node_value(node, name) for name in node_metric_names]
                          for node in nodes}
@@ -397,14 +336,14 @@ def plot_flow(
             base = source_color if data.get("side") == "source" else drop_color
             border = _fade(base, int(data.get("depth", 1)), max_depth)
         borders.append(border)
-        fills.append(_tint(border, 0.62 if data.get("is_focus") else 0.76))
+        fills.append("white" if data.get("is_rest")
+                     else _tint(border, 0.62 if data.get("is_focus") else 0.76))
 
     nx.draw_networkx_nodes(
         sub, pos, nodelist=nodes, node_color=fills, node_size=list(sizes),
         edgecolors=borders, linewidths=1.4, ax=ax,
     )
 
-    # ---- edge styling -------------------------------------------------- #
     edges = list(sub.edges(data=True))
     if edges:
         widths = _scale([d["value"] for _, _, d in edges], *edge_width)
@@ -423,8 +362,6 @@ def plot_flow(
                 node_size=list(sizes), alpha=0.8, min_source_margin=2, min_target_margin=6,
             )
 
-        # an edge between two nodes in the same column would be drawn straight
-        # through whatever sits between them, so bow those out of the way
         def same_level(u, v):
             return sub.nodes[u].get("level") == sub.nodes[v].get("level")
 
@@ -436,17 +373,14 @@ def plot_flow(
                  [_fade(source_color if d.get("side") == "source" else drop_color,
                         int(d.get("depth") or 1), max_depth) for _, _, d in subset],
                  "solid", rad)
-        # cross routes arc away so they never cut straight through another node
         draw(cross_edges, [cross_color] * len(cross_edges), "dashed",
              cross_curve if cross_curve is not None else 0.25)
 
         if show_edge_values:
-            # one aligned mini table per edge
             labelled = edges if label_cross_edges else flow_edges
             edge_rows = {
                 (u, v): _table_rows(
-                    [graph.edge_value(cluster_of(u), cluster_of(v), name, **grain_values)
-                     for name in edge_metric_names],
+                    [edge_value(u, v, name) for name in edge_metric_names],
                     edge_metric_names, value_format, metric_name_len,
                 )
                 for u, v, _ in labelled
@@ -466,12 +400,9 @@ def plot_flow(
             try:
                 nx.draw_networkx_edge_labels(sub, pos, connectionstyle=f"arc3,rad={curve}",
                                              **label_kwargs)
-            except TypeError:  # networkx below 3.4 has no connectionstyle here
+            except TypeError:
                 nx.draw_networkx_edge_labels(sub, pos, **label_kwargs)
 
-    # ---- labels -------------------------------------------------------- #
-    # The node name goes on the marker; the metrics hang underneath it as a
-    # table, offset by the marker radius so the two never overlap.
     nx.draw_networkx_labels(sub, pos,
                             labels={n: _short(cluster_of(n), label_len) for n in nodes},
                             font_size=font_size, font_weight="bold", font_color=INK, ax=ax)
@@ -495,7 +426,6 @@ def plot_flow(
                           edgecolor=HAIRLINE, linewidth=0.6, alpha=0.95),
             )
 
-    # ---- chrome -------------------------------------------------------- #
     if annotate_levels and layout == "layered" and pos:
         for level in sorted({int(d.get("level", 0)) for _, d in sub.nodes(data=True)}):
             if level_label is not None:
@@ -506,7 +436,6 @@ def plot_flow(
                 text = f"SOURCES  L{abs(level)}"
             else:
                 text = f"DROPS  L{level}"
-            # a hairline guide makes the level each cluster sits in unambiguous
             ax.axvline(level * level_gap, color=HAIRLINE, linewidth=0.7,
                        linestyle=(0, (4, 4)), zorder=0)
             ax.annotate(text, xy=(level * level_gap, 1.0),
@@ -534,7 +463,6 @@ def plot_flow(
             handles.append(mpatches.Patch(facecolor=_tint(cross_color),
                                           edgecolor=cross_color, linewidth=1.2,
                                           label="cross route"))
-        # a figure legend keeps it clear of the level headers and the nodes
         legend_artist = fig.legend(handles=handles, loc="lower center", ncol=len(handles),
                                    fontsize=font_size, frameon=False,
                                    bbox_to_anchor=(0.5, 0.0), handlelength=1.1,
@@ -580,19 +508,7 @@ def plot_reach(
     title: str | None = None,
     **kwargs,
 ):
-    """Draw everything within reach of ``start``, laid out by hop count.
-
-    ``direction="in"`` shows the clusters that can reach it (they sit on the
-    left, in travel order); ``"out"`` shows the clusters it can reach. ``cost``
-    is accumulated along each path and capped by ``budget``, so
-
-        graph.plot_reach("A1", budget=120)
-
-    reads as *everywhere that reaches A1 within two hours*, when durations are
-    minutes. Each column is a hop band, and the node table carries the total
-    cost of getting there rather than the cluster's own metrics.
-    """
-    cost = cost or graph.schema.ride_time_metric
+    cost = cost or graph.schema.ride_time_metric or graph.schema.default_metric
     grain = {k: v for k, v in kwargs.items() if k in graph.schema.grain_names}
 
     tree = graph.reach_subgraph(start, direction=direction, budget=budget, cost=cost,
@@ -609,10 +525,8 @@ def plot_reach(
         )
 
     shown = _metric_list(node_metrics) or [cost, "hops"]
-    # columns already say how far, so size is free to say how big
     size_metric = size_metric or graph.schema.default_metric
     kwargs.setdefault("value_format", {cost: "{:,.1f}", "hops": "{:,.0f}"})
-    # the totals are per path, so they come off the tree, not off the clusters
     totals = {
         node: {cost: data.get("cost", 0.0), "hops": float(data.get("hops", 0))}
         for node, data in tree.nodes(data=True)
@@ -664,11 +578,6 @@ def plot_partners(
     title: str | None = None,
     **grain_values,
 ):
-    """Back-to-back bars: top sources on the left, top drops on the right.
-
-    ``shared_scale`` keeps both panels on the same axis, so the inbound and
-    outbound bars can be compared directly.
-    """
     plt = _require_matplotlib()
 
     metric = graph.resolve_metric(metric)
@@ -677,7 +586,6 @@ def plot_partners(
     fig, axes = plt.subplots(1, 2, figsize=figsize, sharey=False)
 
     for ax, rows, color, heading, padding in (
-        # the left panel is mirrored, so its labels need the opposite offset
         (axes[0], sources, source_color, "orders coming from", -6),
         (axes[1], drops, drop_color, "orders going to", 3),
     ):
@@ -704,7 +612,6 @@ def plot_partners(
     axes[0].invert_xaxis()
     axes[0].yaxis.tick_right()
     if shared_scale:
-        # both sides on one scale, so inbound and outbound are comparable by eye
         limit = max([abs(v) for _, v in sources + drops if v == v] or [1.0]) * 1.2
         axes[0].set_xlim(limit, 0)
         axes[1].set_xlim(0, limit)
@@ -734,11 +641,6 @@ def plot_profile(
     title: str | None = None,
     ax=None,
 ):
-    """Heatmap of one metric across two grains, for a route or a whole cluster.
-
-    Pass ``pickup``/``drop`` for a single route, or ``node`` for every route of
-    one cluster in the given ``direction``.
-    """
     plt = _require_matplotlib()
 
     metric = graph.resolve_metric(metric)
@@ -796,7 +698,6 @@ def plot_matrix(
     ax=None,
     **grain_values,
 ):
-    """Pickup x drop heatmap of one metric."""
     plt = _require_matplotlib()
 
     metric = graph.resolve_metric(metric)
@@ -852,12 +753,6 @@ def plot_route_graph(
     ax=None,
     **grain_values,
 ):
-    """Draw the whole route graph, sized and coloured by one metric.
-
-    The default circular layout ranks clusters by the metric around the circle,
-    so where a cluster sits is meaningful; ``spring`` and ``geo`` are available
-    when you want a force layout or real H3 coordinates instead.
-    """
     plt = _require_matplotlib()
     import networkx as nx
 
@@ -879,15 +774,12 @@ def plot_route_graph(
     if layout == "geo":
         pos = geo_layout(nodes)
     elif layout == "circular":
-        # ranked around the circle, so position carries meaning and no two
-        # clusters look related just because a force layout put them together
         order = [node for node, _ in sorted(
             zip(nodes, node_values),
             key=lambda item: -np.inf if np.isnan(item[1]) else item[1], reverse=True)]
         angles = np.linspace(0, 2 * np.pi, len(order), endpoint=False) + np.pi / 2
         pos = {node: (float(np.cos(a)), float(np.sin(a))) for node, a in zip(order, angles)}
     elif layout == "spring":
-        # a wider k and more iterations stop hub-and-spoke graphs collapsing
         count = max(simple.number_of_nodes(), 2)
         pos = nx.spring_layout(simple, seed=7, weight=None,
                                k=2.5 / np.sqrt(count), iterations=300)
@@ -930,7 +822,7 @@ def plot_route_graph(
                  fontweight="bold", color=INK)
     ax.margins(0.1)
     if layout in ("circular", "shell"):
-        ax.set_aspect("equal", adjustable="box")   # a round ring, not an ellipse
+        ax.set_aspect("equal", adjustable="box")
     ax.axis("off")
     fig.tight_layout()
     return fig

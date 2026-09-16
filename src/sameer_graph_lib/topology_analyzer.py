@@ -1,4 +1,3 @@
-"""Topology analysis for route affinity graphs."""
 
 from __future__ import annotations
 
@@ -8,7 +7,6 @@ import networkx as nx
 
 
 class TopologyAnalyzer:
-    """Split a graph into its main trunk and residual minor branches."""
 
     def __init__(self, graph_or_affinity) -> None:
         self.graph = graph_or_affinity if isinstance(graph_or_affinity, nx.Graph) else graph_or_affinity.graph
@@ -105,7 +103,6 @@ class TopologyAnalyzer:
             return []
 
         best_path: List[str] = []
-        # Limit pair scans for very long seed routes while keeping endpoint intent.
         candidates = present[:25] + present[-25:]
         for idx, source in enumerate(candidates):
             for target in candidates[idx + 1 :]:

@@ -1,3 +1,5 @@
+import warnings
+
 import pytest
 
 pd = pytest.importorskip("pandas")
@@ -213,3 +215,149 @@ def test_a_named_grain_that_is_absent_says_what_to_pass():
     with pytest.raises(KeyError, match="candidates here"):
         RouteExplorer(make_frame(), pickup_col="origin_zone", drop_col="dest_zone",
                       grain_cols=("week_period",))
+
+
+def weighted_frame():
+    return pd.DataFrame([
+        {"pickup_cluster": "A", "drop_cluster": "B", "orders": 10.0,
+         "requests": 100.0, "avg_distance": 2.0, "avg_duration": 10.0},
+        {"pickup_cluster": "A", "drop_cluster": "B", "orders": 90.0,
+         "requests": 300.0, "avg_distance": 8.0, "avg_duration": 10.0},
+    ])
+
+
+def test_a_weight_column_that_is_not_there_is_refused():
+    """A typo would silently leave every mean unweighted."""
+    with pytest.raises(KeyError, match="would be unweighted"):
+        RouteExplorer(weighted_frame(), weight_col="requsts")
+    # the real one still weights
+    explorer = RouteExplorer(weighted_frame(), weight_col="requests")
+    assert explorer.value("A", "B", "avg_distance") == pytest.approx(
+        (2 * 100 + 8 * 300) / 400)
+
+
+def test_the_schema_does_not_claim_a_weight_column_it_has_not_got():
+    frame = weighted_frame().drop(columns=["requests"])
+    explorer = RouteExplorer(frame)
+    assert explorer.weight_col is None                  # not the absent default
+    assert explorer.value("A", "B", "avg_distance") == pytest.approx(5.0)   # plain mean
+
+
+def test_weight_col_none_is_still_allowed():
+    explorer = RouteExplorer(weighted_frame(), weight_col=None)
+    assert explorer.weight_col is None
+    assert explorer.value("A", "B", "avg_distance") == pytest.approx(5.0)
+
+
+def test_one_column_cannot_be_both_ends_of_a_route():
+    with pytest.raises(ValueError, match="self loop"):
+        RouteExplorer(weighted_frame(), pickup_col="pickup_cluster",
+                      drop_col="pickup_cluster")
+
+
+def test_a_missing_route_id_column_is_named():
+    with pytest.raises(KeyError, match="origin"):
+        RouteExplorer(weighted_frame(), pickup_col="origin")
+
+
+def test_a_repeated_metric_name_is_not_an_error():
+    explorer = RouteExplorer(weighted_frame(),
+                             metrics=["orders", "orders", "avg_distance"])
+    assert explorer.schema.sum_metrics == ["orders"]
+    assert "avg_distance" in explorer.schema.mean_metrics
+
+
+def test_average_hints_match_words_not_substrings():
+    """Real column names, including ones the old substring test got wrong."""
+    from sameer_graph_lib.route_graph import classify_metrics
+
+    frame = pd.DataFrame([{
+        "Total_Orders": 1.0, "Total_Pings": 1.0, "FE_Count": 1.0,
+        "Bikelite_FE_per": 0.4, "Avg_LM": 1.0, "AOR": 1.0,
+        "orders_generated": 5.0, "km_per_trip": 2.0, "Surge%": 0.1,
+    }])
+    sums, means = classify_metrics(frame)
+    # a trailing "per" is a percentage; a substring test looking for "per_" missed it
+    assert "Bikelite_FE_per" in means
+    assert "km_per_trip" in means and "Avg_LM" in means and "Surge%" in means
+    # and "rate" inside "generated" is not a rate
+    assert "orders_generated" in sums
+    assert "Total_Orders" in sums and "FE_Count" in sums
+
+
+def test_a_named_metric_the_frame_lacks_is_flagged():
+    frame = pd.DataFrame([{"pickup_cluster": "A", "drop_cluster": "B",
+                           "Total_Orders": 10.0, "Total_Pings": 100.0,
+                           "Avg_LM": 2.0, "Avg_Ride_Time": 10.0}])
+    common = dict(length_metric="Avg_LM", ride_time_metric="Avg_Ride_Time")
+
+    # named through mean_metrics: it stays in the schema as NaN, so it warns
+    with pytest.warns(UserWarning, match="will be NaN"):
+        explorer = RouteExplorer(frame, mean_metrics=["Avg_LM", "Bikelite_FE_per"],
+                                 **common)
+    assert np.isnan(explorer.value("A", "B", "Bikelite_FE_per"))
+
+    # named through metrics=: that one refuses, and says what is available
+    with pytest.raises(KeyError, match="Numeric columns here"):
+        RouteExplorer(frame, metrics=["Total_Orders", "Bikelite_FE_per"], **common)
+
+    # the length and ride-time pair may be absent on purpose, and stay quiet
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        RouteExplorer(frame.drop(columns=["Avg_LM"]), length_metric="Avg_LM",
+                      ride_time_metric="Avg_Ride_Time")
+
+
+def test_two_columns_is_enough_to_build_and_plot():
+    """The smallest useful frame: two id columns and no metrics at all."""
+    matplotlib = pytest.importorskip("matplotlib")
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    two = pd.DataFrame({"pickup_cluster": ["A", "A", "C", "C", "C", "B"],
+                        "drop_cluster": ["B", "B", "A", "A", "D", "A"]})
+    explorer = RouteExplorer(two)
+
+    assert explorer.schema.default_metric == "row_count"      # always available
+    assert explorer.metrics == ["row_count", "count"]         # nothing invented
+    assert explorer.schema.sum_metrics == [] == explorer.schema.mean_metrics
+    assert explorer.weight_col is None
+    assert not explorer.schema.has_speed
+
+    # and it answers the ordinary questions by counting rows
+    assert explorer.value("A", "B") == pytest.approx(2.0)
+    assert explorer.graph.top_drops("A", 1) == [("B", 2.0)]
+    assert [n for n, _ in explorer.graph.top_sources("A", 2)] == ["C", "B"]
+
+    fig = explorer.plot("A", upstream=2, downstream=2)
+    assert "row_count" in fig.axes[0].get_title()
+    plt.close(fig)
+
+
+def test_no_column_name_is_assumed():
+    frame = pd.DataFrame({"from_zone": ["A", "A", "C"], "to_zone": ["B", "B", "A"],
+                          "trips": [10.0, 20.0, 30.0], "km": [2.0, 4.0, 6.0],
+                          "mins": [10.0, 10.0, 10.0]})
+    explorer = RouteExplorer(frame, pickup_col="from_zone", drop_col="to_zone",
+                             metrics=["trips", "km", "mins"],
+                             sum_metrics=["trips"], mean_metrics=["km", "mins"],
+                             weight_col="trips", length_metric="km",
+                             ride_time_metric="mins")
+    assert explorer.schema.sum_metrics == ["trips"]
+    assert explorer.value("A", "B", "speed") == pytest.approx(
+        explorer.value("A", "B", "km") / explorer.value("A", "B", "mins"))
+    assert explorer.reach_to("A", budget=15)["cluster"].tolist() == ["C"]
+
+
+def test_what_is_not_there_is_reported_not_invented():
+    frame = pd.DataFrame({"pickup_cluster": ["A"], "drop_cluster": ["B"],
+                          "trips": [5.0]})
+    explorer = RouteExplorer(frame)
+    # no phantom avg_distance / avg_duration / speed in the schema
+    assert explorer.metrics == ["row_count", "trips", "count"]
+    assert "avg_distance" not in explorer.schema.mean_metrics
+
+    with pytest.raises(KeyError):
+        explorer.value("A", "B", "speed")
+    with pytest.raises(ValueError, match="No cost metric"):
+        explorer.reach_to("A", budget=10)

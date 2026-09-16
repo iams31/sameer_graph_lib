@@ -78,11 +78,27 @@ def test_explicit_metric_lists_win_over_inference():
     assert schema.default_metric == "orders"
 
 
-def test_schema_keeps_length_metrics_even_when_absent():
-    frame = make_frame().drop(columns=["avg_distance"])
-    schema = RouteSchema.from_frame(frame, grain_cols=("week_period", "hour"))
-    tensor = RouteTensor.from_frame(schema, frame)
-    assert np.isnan(tensor.summary()["speed"])       # no distance column, no speed
+def test_speed_exists_only_when_both_halves_are_there():
+    """Nothing about the speed pair is assumed from the column names."""
+    frame = make_frame()
+    both = RouteSchema.from_frame(frame, grain_cols=("week_period", "hour"))
+    assert both.has_speed                                  # the frame has the pair
+    assert "speed" in both.metric_names
+
+    without = RouteSchema.from_frame(frame.drop(columns=["avg_distance"]),
+                                     grain_cols=("week_period", "hour"))
+    assert not without.has_speed
+    assert "speed" not in without.metric_names             # not a NaN metric, absent
+    assert without.length_metric is None
+    assert "avg_distance" not in without.mean_metrics      # no phantom column
+    with pytest.raises(KeyError, match="length_metric"):
+        without.resolve_metric("length")
+
+    # naming your own pair works whatever they are called
+    renamed = frame.rename(columns={"avg_distance": "km", "avg_duration": "mins"})
+    named = RouteSchema.from_frame(renamed, grain_cols=("week_period", "hour"),
+                                   length_metric="km", ride_time_metric="mins")
+    assert named.has_speed and "speed" in named.metric_names
 
 
 def test_tensor_sums_and_weighted_means_are_exact():
@@ -324,11 +340,13 @@ def test_filter_rejects_nonsense(graph):
 
 
 def test_nan_never_passes_a_filter():
-    frame = make_frame().drop(columns=["avg_distance"])       # speed becomes NaN
+    frame = make_frame()
+    # an average with no values is NaN; a sum with no values is 0, not NaN
+    frame["avg_unmeasured"] = np.nan
     graph = RouteGraph.from_dataframe(frame, grain_cols=("week_period", "hour"))
-    assert np.isnan(graph.edge_value("A1", "B1", "speed"))
-    assert graph.matching_routes(edge_filter={"speed": (">", 0)}) == []
-    assert graph.matching_routes(edge_filter={"speed": ("<", 999)}) == []
+    assert np.isnan(graph.edge_value("A1", "B1", "avg_unmeasured"))
+    assert graph.matching_routes(edge_filter={"avg_unmeasured": (">", 0)}) == []
+    assert graph.matching_routes(edge_filter={"avg_unmeasured": ("<", 999)}) == []
 
 
 def test_filter_applies_before_the_expansion_walks(graph):
@@ -709,3 +727,107 @@ def test_dividing_by_zero_gives_nan_not_an_error():
     graph = RouteGraph.from_dataframe(
         frame, weight_col=None, derived_metrics={"rate": ("orders", "/", "requests")})
     assert np.isnan(graph.edge_value("A", "B", "rate"))
+
+
+def make_many_partners_frame(n=10):
+    """A1 with n sources and n drops, so a top-3 leaves plenty behind."""
+    rng = np.random.default_rng(3)
+    rows = []
+    for i in range(1, n + 1):
+        for week_period in ("weekday", "weekend"):
+            requests = float(rng.integers(50, 400))
+            rows.append({"pickup_cluster": f"S{i}", "drop_cluster": "A1",
+                         "week_period": week_period, "orders": requests * 0.5,
+                         "requests": requests, "avg_distance": float(i),
+                         "avg_duration": 10.0})
+            rows.append({"pickup_cluster": "A1", "drop_cluster": f"D{i}",
+                         "week_period": week_period, "orders": requests * 0.4,
+                         "requests": requests, "avg_distance": float(i),
+                         "avg_duration": 10.0})
+    return pd.DataFrame(rows)
+
+
+def test_the_rest_node_accounts_for_what_the_top_k_left_out():
+    graph = RouteGraph.from_dataframe(make_many_partners_frame(),
+                                      grain_cols=("week_period",),
+                                      weight_col="requests")
+    sub = graph.flow_subgraph("A1", upstream=3, downstream=3, rest=True)
+    rest = [d for _, d in sub.nodes(data=True)
+            if d.get("is_rest") and d["side"] == "source"][0]
+
+    kept = [n for n, _ in graph.top_sources("A1", 3)]
+    left_out = [n for n, _ in graph.top_sources("A1", 99) if n not in kept]
+    assert sorted(rest["partners"]) == sorted(left_out)
+    assert len(left_out) == 7 and rest["cluster"] == "rest (7)"
+
+    # the sums add up
+    expected = sum(graph.edge_value(s, "A1", "orders") for s in left_out)
+    assert rest["metrics"]["orders"] == pytest.approx(expected)
+
+    # the averages stay weighted, not averaged again
+    weights = [graph.edge_value(s, "A1", "requests") for s in left_out]
+    values = [graph.edge_value(s, "A1", "avg_distance") for s in left_out]
+    by_hand = sum(v * w for v, w in zip(values, weights)) / sum(weights)
+    assert rest["metrics"]["avg_distance"] == pytest.approx(by_hand)
+    assert rest["metrics"]["avg_distance"] != pytest.approx(float(np.mean(values)))
+
+    # and nothing is missing: top-k plus rest is the whole side
+    shown = sum(graph.edge_value(s, "A1", "orders") for s in kept)
+    assert shown + rest["metrics"]["orders"] == pytest.approx(
+        graph.node_value("A1", "orders", "in"))
+
+
+def test_rest_is_off_unless_asked_for():
+    graph = RouteGraph.from_dataframe(make_many_partners_frame(),
+                                      grain_cols=("week_period",))
+    plain = graph.flow_subgraph("A1", upstream=3, downstream=3)
+    assert not [d for _, d in plain.nodes(data=True) if d.get("is_rest")]
+    withrest = graph.flow_subgraph("A1", upstream=3, downstream=3, rest=True)
+    assert len([d for _, d in withrest.nodes(data=True) if d.get("is_rest")]) == 2
+
+
+def test_nothing_is_left_out_means_no_rest_node():
+    graph = RouteGraph.from_dataframe(make_many_partners_frame(n=2),
+                                      grain_cols=("week_period",))
+    sub = graph.flow_subgraph("A1", upstream=5, downstream=5, rest=True)
+    assert not [d for _, d in sub.nodes(data=True) if d.get("is_rest")]
+
+
+def test_repeated_rows_for_one_route_are_added_at_ingest():
+    """Two rows for the same pickup and drop are one route, summed."""
+    frame = pd.DataFrame([
+        {"pickup_cluster": "A", "drop_cluster": "B", "orders": 10.0,
+         "requests": 100.0, "avg_distance": 2.0, "avg_duration": 10.0},
+        {"pickup_cluster": "A", "drop_cluster": "B", "orders": 30.0,
+         "requests": 300.0, "avg_distance": 6.0, "avg_duration": 10.0},
+    ])
+    graph = RouteGraph.from_dataframe(frame, weight_col="requests")
+    assert len(graph.routes()) == 1
+    assert graph.edge_value("A", "B", "orders") == pytest.approx(40.0)
+    assert graph.edge_value("A", "B", "avg_distance") == pytest.approx(
+        (2 * 100 + 6 * 300) / 400)
+
+
+def test_the_plot_measures_the_rest_node_like_its_neighbours():
+    matplotlib = pytest.importorskip("matplotlib")
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    graph = RouteGraph.from_dataframe(make_many_partners_frame(),
+                                      grain_cols=("week_period",),
+                                      weight_col="requests")
+    sub = graph.flow_subgraph("A1", upstream=3, downstream=3, rest=True)
+    drops_rest = [d for _, d in sub.nodes(data=True)
+                  if d.get("is_rest") and d["side"] == "drop"][0]
+
+    # the drops have no outbound routes, so measured "out" they are NaN - and so
+    # is their rest node, rather than quietly showing the inbound total instead
+    assert np.isnan(graph.clusters_summary(drops_rest["partners"], direction="out")["orders"])
+    assert graph.clusters_summary(drops_rest["partners"], direction="in")["orders"] == (
+        pytest.approx(drops_rest["metrics"]["orders"]))
+
+    fig = graph.plot_flow("A1", upstream=3, downstream=3, rest=True,
+                          node_metrics=["orders"])
+    tables = [t.get_text() for t in fig.axes[0].texts]
+    assert any("rest (7)" in t for t in tables)
+    plt.close(fig)

@@ -1,4 +1,3 @@
-"""Geospatial plotting helpers for H3 cells."""
 
 from __future__ import annotations
 
@@ -33,11 +32,6 @@ def plot_h3_cells(
     show_centers: bool = False,
     equal_aspect: bool = True,
 ):
-    """Plot one H3 cell or an iterable/comma string of H3 cells as polygons.
-
-    Returns the Matplotlib ``Figure`` object. The axes use longitude on X and
-    latitude on Y, so the plot can be inspected as a geospatial footprint.
-    """
     import matplotlib.pyplot as plt
     from matplotlib.patches import Polygon
 
@@ -110,7 +104,6 @@ def cells_to_geodataframe(
     *,
     selected_cells: str | Iterable[str] | None = None,
 ):
-    """Convert one or more H3 cells to a GeoPandas dataframe of polygons."""
     try:
         import geopandas as gpd
         from shapely.geometry import Polygon
@@ -160,12 +153,6 @@ def plot_h3_cells_map(
     legend: bool = True,
     hide_axes: bool = True,
 ):
-    """Plot H3 cells with GeoPandas and an optional Contextily basemap.
-
-    This mirrors the GeoPandas workflow:
-    convert H3 polygons to ``EPSG:3857``, plot them, then add a web basemap.
-    Returns the Matplotlib ``Figure`` object.
-    """
     try:
         import contextily as cx
         import matplotlib.pyplot as plt

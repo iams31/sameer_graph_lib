@@ -1,4 +1,3 @@
-"""Public API for sameer_graph_lib."""
 
 from .affinity_graph import AffinityGraph
 from .corridor_extractor import CorridorExtractor
@@ -21,10 +20,6 @@ from .plylinedecoding import decode_polyline, get_hexes_from_polyline
 from .spatial_ingestor import SpatialIngestor
 from .topology_analyzer import TopologyAnalyzer
 
-# The route stack and the DataFrame plotter need pandas/numpy (and xarray or
-# matplotlib for some views), so they are imported on first use instead of at
-# package import time. ``from sameer_graph_lib import RouteExplorer`` works the
-# same way it would for an eager import.
 _LAZY = {
     "CATEGORICAL": "route_graph",
     "MEAN_METRICS": "route_graph",
@@ -139,4 +134,4 @@ __all__ = [
     "suggest_columns",
 ]
 
-__version__ = "0.4.2"
+__version__ = "0.4.3"

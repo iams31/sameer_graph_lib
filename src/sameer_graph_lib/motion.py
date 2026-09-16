@@ -1,9 +1,3 @@
-"""Motion analysis for polylines sampled at a fixed time interval.
-
-All inputs use the convention ``polyline = [(lat, lng), (lat, lng), ...]`` and
-``interval_seconds`` is the time between consecutive points. Distances are
-computed with the haversine formula on a sphere of radius 6_371_000 m.
-"""
 
 from __future__ import annotations
 from .plylinedecoding import decode_polyline
@@ -74,14 +68,9 @@ def max_accelaration(polyline, interval_seconds: float, smooth: bool = True,geoj
     return {'max':max(accelaration_array),'min':min(accelaration_array)}
 
 
-# ---------------------------------------------------------------------------
-# New helpers below: m/s and m/s^2 outputs. They use _geodesic_m (true
-# meters) so they stay independent of _haversine_m's km return value.
-# ---------------------------------------------------------------------------
 
 
 def _geodesic_m(p1, p2, geojson: bool = True) -> float:
-    """Geodesic distance in meters between two points."""
     pyproj = _require_pyproj()
     geodesic = pyproj.Geod(ellps="WGS84")
     if geojson:
@@ -92,7 +81,6 @@ def _geodesic_m(p1, p2, geojson: bool = True) -> float:
 
 
 def _decode_or_passthrough(polyline, geojson: bool, precision: int) -> list:
-    """Accept either an encoded polyline string or a sequence of points."""
     if isinstance(polyline, str):
         return decode_polyline(polyline_str=polyline, precision=precision, geojson=geojson)
     return list(polyline)
@@ -118,11 +106,6 @@ def compute_speeds(
     geojson: bool = True,
     precision: int = 5,
 ) -> list[float]:
-    """Return instantaneous speeds (m/s) between consecutive points.
-
-    Length is ``n - 1``. ``polyline`` may be an encoded string or a sequence
-    of points already in the order set by ``geojson``.
-    """
     if interval_seconds <= 0:
         raise ValueError("interval_seconds must be positive")
     decoded = _decode_or_passthrough(polyline, geojson, precision)
@@ -140,11 +123,6 @@ def compute_accelerations(
     geojson: bool = True,
     precision: int = 5,
 ) -> list[float]:
-    """Return accelerations (m/s^2) between consecutive speed samples.
-
-    Length is ``n - 2``. Positive values are acceleration, negative values
-    are deceleration.
-    """
     speeds = compute_speeds(polyline, interval_seconds, geojson=geojson, precision=precision)
     if len(speeds) < 2:
         raise ValueError("polyline needs at least 3 points to compute acceleration")
@@ -161,18 +139,6 @@ def smooth_speeds_median(
     geojson: bool = True,
     precision: int = 5,
 ) -> list[float]:
-    """Return speeds (m/s) with outliers nullified via sliding-window median.
-
-    Each sample is replaced by the median of itself and its
-    ``window_size - 1`` neighbours (edge-padded at the boundaries). A median
-    is robust: a single bad GPS reading is replaced by its neighbourhood's
-    middle value, instead of being smeared across surrounding samples
-    (which is what FFT or polynomial smoothers would do).
-
-    Default ``window_size=7`` handles route-shape polylines where outliers
-    can come in clusters of 2–3 consecutive samples; for clean GPS traces
-    where outliers are isolated, ``window_size=3`` or ``5`` is enough.
-    """
     np = _require_numpy()
     if window_size < 3 or window_size % 2 == 0:
         raise ValueError("window_size must be an odd integer >= 3")
@@ -196,7 +162,6 @@ def dominant_frequency_hz(
     geojson: bool = True,
     precision: int = 5,
 ) -> float:
-    """Return the dominant non-DC frequency (Hz) of the speed signal."""
     np = _require_numpy()
     speeds = compute_speeds(polyline, interval_seconds, geojson=geojson, precision=precision)
     if len(speeds) < 2:
@@ -210,13 +175,9 @@ def dominant_frequency_hz(
     return float(freqs[int(spectrum.argmax())])
 
 
-# ---------------------------------------------------------------------------
-# Timestamped polylines: each point is (lat, lng, t_seconds)
-# ---------------------------------------------------------------------------
 
 
 def compute_speeds_from_timestamps(points: Sequence[TimedPoint]) -> list[float]:
-    """Return speeds (m/s) using each segment's actual delta-t."""
     _validate_timed(points, min_points=2)
     return [
         _geodesic_m(points[i], points[i + 1], geojson=False)
@@ -226,11 +187,6 @@ def compute_speeds_from_timestamps(points: Sequence[TimedPoint]) -> list[float]:
 
 
 def compute_accelerations_from_timestamps(points: Sequence[TimedPoint]) -> list[float]:
-    """Return accelerations (m/s^2) for a non-uniformly-sampled trace.
-
-    For each interior point ``i+1`` we take ``(v[i+1] - v[i]) / dt`` where
-    ``dt = (segment_i_duration + segment_{i+1}_duration) / 2``.
-    """
     _validate_timed(points, min_points=3)
     speeds = compute_speeds_from_timestamps(points)
     out = []
@@ -245,11 +201,6 @@ def detect_sudden_braking_from_timestamps(
     points: Sequence[TimedPoint],
     threshold_mps2: float = -3.0,
 ) -> list[dict]:
-    """Return sudden-braking events for a timestamped trace.
-
-    Each event is ``{index, time_s, deceleration_mps2}`` where ``index``
-    is the index in ``points`` of the boundary sample.
-    """
     if threshold_mps2 >= 0:
         raise ValueError("threshold_mps2 must be negative (it is a deceleration)")
     accels = compute_accelerations_from_timestamps(points)
@@ -268,11 +219,6 @@ def resample_polyline(
     points: Sequence[TimedPoint],
     interval_seconds: float,
 ) -> list[Point]:
-    """Resample a timestamped polyline to a uniform time grid (linear interp).
-
-    Returns ``[(lat, lng), ...]``. Pass to :func:`compute_speeds` with
-    ``geojson=False`` to use FFT smoothing on real GPS logs.
-    """
     if interval_seconds <= 0:
         raise ValueError("interval_seconds must be positive")
     _validate_timed(points, min_points=2)

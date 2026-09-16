@@ -1,4 +1,3 @@
-"""Small compatibility layer for h3-py 3.x and 4.x APIs."""
 
 from __future__ import annotations
 
@@ -102,7 +101,6 @@ def approximate_grid_distance(start: str, end: str) -> int:
 
 
 def grid_distance(start: str, end: str) -> int:
-    """Return native H3 grid distance between two cells."""
     if start == end:
         return 0
 
