@@ -72,6 +72,30 @@ uv run --extra analysis jupyter lab examples
 oute_flow_example.ipynb
 ```
 
+## A cluster that feeds itself
+
+`self_loop_flow.py` covers rows whose pickup and drop are the same cluster - a
+trip that starts and ends in the same place, often the largest single route the
+cluster has.
+
+```powershell
+uv run --extra analysis python examples\self_loop_flow.py
+```
+
+It prints the arithmetic and saves two images:
+
+- `self_loop_counted.png` - the default. The loop is not drawn, but it costs no
+  place in the top x and `rest=True` carries its volume, so the drawn routes
+  plus the rest come back to the cluster's real total (`12,000 + 18,840 =
+  30,840` in, `2,100 + 18,000 = 20,100` out)
+- `self_loop_drawn.png` - `exclude_self_loops=False`, where the loop is a ring
+  on the cluster it loops on with its own metric table, and does take a place in
+  the top x
+
+The script also shows what that costs: at `upstream=3` with the loop drawn you
+see two outside clusters rather than three, so raise the top x by one if you
+want the same number of partners.
+
 ## Hex metric graph images
 
 Built from a single H3 column with `HexMetricGraph` (see the README section
