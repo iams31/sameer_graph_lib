@@ -202,6 +202,7 @@ def plot_flow(
     edge_filter=None,
     node_filter=None,
     include_cross_edges: bool = False,
+    exclude_self_loops: bool = True,
     layout: str = "layered",
     level_gap: float = 2.6,
     spacing: float = 1.0,
@@ -251,7 +252,8 @@ def plot_flow(
         focus, upstream=upstream, downstream=downstream, metric=metric,
         per_parent=per_parent, rank_by=rank_by, min_value=min_value,
         edge_filter=edge_filter, node_filter=node_filter, mirror=mirror,
-        rest=rest, include_cross_edges=include_cross_edges, **grain_values,
+        rest=rest, include_cross_edges=include_cross_edges,
+        exclude_self_loops=exclude_self_loops, **grain_values,
     )
     if sub.number_of_nodes() == 0:
         raise ValueError("Nothing to plot: the expansion selected no clusters")
@@ -365,6 +367,8 @@ def plot_flow(
         def same_level(u, v):
             return sub.nodes[u].get("level") == sub.nodes[v].get("level")
 
+        loops = [(u, v, d) for u, v, d in flow_edges if u == v]
+        flow_edges = [(u, v, d) for u, v, d in flow_edges if u != v]
         straight = [(u, v, d) for u, v, d in flow_edges if not same_level(u, v)]
         sideways = [(u, v, d) for u, v, d in flow_edges if same_level(u, v)]
         for subset, rad in ((straight, curve),
@@ -375,6 +379,41 @@ def plot_flow(
                  "solid", rad)
         draw(cross_edges, [cross_color] * len(cross_edges), "dashed",
              cross_curve if cross_curve is not None else 0.25)
+
+        loop_labels = {}
+        if loops:
+            xs = [p[0] for p in pos.values()]
+            ys = [p[1] for p in pos.values()]
+            span_x = (max(xs) - min(xs)) or level_gap
+            span_y = (max(ys) - min(ys)) or spacing
+        for u, _, data in loops:
+            colour = _fade(source_color if data.get("side") == "source" else drop_color,
+                           int(data.get("depth") or 1), max_depth)
+            wide, tall = 0.11 * span_x, 0.11 * span_y
+            x, y = pos[u]
+            centre = y + tall * 0.75
+            ax.add_patch(mpatches.Ellipse(
+                (x, centre), wide, tall, fill=False, lw=width_of[(u, u)],
+                ec=colour, alpha=0.8, zorder=1))
+            ax.annotate("", xy=(x + wide * 0.30, centre + tall * 0.40),
+                        xytext=(x + wide * 0.12, centre + tall * 0.48),
+                        arrowprops=dict(arrowstyle="-|>", color=colour, lw=0,
+                                        mutation_scale=13, alpha=0.9), zorder=2)
+            loop_labels[u] = (x, centre + tall * 0.5 + 0.12 * span_y)
+
+        if show_edge_values and loops:
+            for u, v, _ in loops:
+                rows = _table_rows([edge_value(u, v, name) for name in edge_metric_names],
+                                   edge_metric_names, value_format, metric_name_len)
+                key_width, value_width = _column_widths([rows])
+                x, y = loop_labels[u]
+                ax.text(x, y, metric_table(rows, key_width, value_width,
+                                           show_names=show_metric_names
+                                           and len(edge_metric_names) > 1),
+                        ha="center", va="center", fontsize=table_font_size,
+                        family="monospace", color=INK, zorder=4,
+                        bbox=dict(boxstyle="square,pad=0.35", facecolor="white",
+                                  edgecolor=HAIRLINE, linewidth=0.6, alpha=0.95))
 
         if show_edge_values:
             labelled = edges if label_cross_edges else flow_edges

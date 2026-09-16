@@ -496,6 +496,16 @@ the rest node       :     13,705.5   4 routes from ['A2', 'C1', 'C6', 'C5']
 top 3 + rest        :     35,151.2
 ```
 
+A route from a cluster back to itself is part of this. By default
+`exclude_self_loops=True` keeps it out of the drawing, but it no longer costs
+you a slot in the top-k, and with `rest=True` its volume lands in the rest node
+so the totals still close. Pass `exclude_self_loops=False` to draw it, as a ring
+on the cluster it loops on, carrying its own table:
+
+```python
+ex.plot("A1", upstream=3, downstream=3, exclude_self_loops=False)
+```
+
 `rest_label=` renames it, and `clusters_summary(clusters, direction=)` is the
 same merge on its own. As with every other node, the table drawn on it measures
 those clusters as a side of the graph; the edge into it measures the routes.

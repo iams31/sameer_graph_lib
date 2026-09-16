@@ -1262,12 +1262,19 @@ class RouteGraph:
             for hop, keep in enumerate(plan, start=1):
                 if not frontier:
                     break
-                pool = []
+                focus_set = set(focus_nodes)
+                pool, skipped = [], []
                 for parent_key, parent in frontier:
-                    pool += [(parent_key, parent, p, v) for p, v in source.partners(
-                        parent, direction=direction, metric=metric,
-                        min_value=min_value, rank_by=rank_by,
-                        node_direction=node_direction, **grain_values)]
+                    for partner, value in source.partners(
+                            parent, direction=direction, metric=metric,
+                            min_value=min_value, rank_by=rank_by,
+                            node_direction=node_direction, **grain_values):
+                        entry = (parent_key, parent, partner, value)
+                        if ((exclude_self_loops and partner == parent)
+                                or (hop > 1 and partner in focus_set)):
+                            skipped.append(entry)
+                        else:
+                            pool.append(entry)
 
                 if per_parent:
                     picks, seen = [], {}
@@ -1279,21 +1286,16 @@ class RouteGraph:
                     pool.sort(key=lambda item: -np.inf if np.isnan(item[3]) else item[3],
                               reverse=True)
                     picks = pool[:keep] if keep else pool
-                left_out = [e for e in pool if e not in picks]
+                left_out = [e for e in pool if e not in picks] + skipped
 
                 next_frontier = []
-                focus_set = set(focus_nodes)
                 for parent_key, parent, partner, value in picks:
-                    if exclude_self_loops and partner == parent:
-                        continue
-                    if hop > 1 and partner in focus_set:
-                        continue
                     partner_key = key_for(partner, side)
                     if partner_key not in sub:
                         sub.add_node(partner_key, cluster=partner, level=sign * hop,
                                      depth=hop, side=side, value=0.0, is_focus=False)
                         next_frontier.append((partner_key, partner))
-                    if not np.isnan(value):
+                    if not np.isnan(value) and partner_key != parent_key:
                         node = sub.nodes[partner_key]
                         node["value"] = float(np.nansum([node.get("value", 0.0), value]))
                     src, dst = ((parent_key, partner_key) if sign > 0

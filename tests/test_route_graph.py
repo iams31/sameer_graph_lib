@@ -831,3 +831,71 @@ def test_the_plot_measures_the_rest_node_like_its_neighbours():
     tables = [t.get_text() for t in fig.axes[0].texts]
     assert any("rest (7)" in t for t in tables)
     plt.close(fig)
+
+
+def make_self_loop_frame():
+    """A1 -> A1 is the single biggest route into and out of A1."""
+    rows = [
+        ("A1", "A1", 900.0, 1.0),
+        ("A1", "B1", 50.0, 5.0),
+        ("A1", "B2", 40.0, 6.0),
+        ("C1", "A1", 300.0, 4.0),
+        ("C2", "A1", 200.0, 3.0),
+        ("C3", "A1", 100.0, 2.0),
+        ("C4", "A1", 30.0, 7.0),
+    ]
+    return pd.DataFrame([
+        {"pickup_cluster": p, "drop_cluster": d, "week_period": w,
+         "orders": orders, "requests": 10.0, "avg_distance": dist}
+        for p, d, orders, dist in rows for w in ("weekday", "weekend")
+    ])
+
+
+def test_a_self_loop_does_not_eat_a_top_k_slot():
+    graph = RouteGraph.from_dataframe(make_self_loop_frame(),
+                                      grain_cols=("week_period",),
+                                      weight_col="requests")
+
+    # A1 -> A1 outranks every real source, so ranking it and then dropping it
+    # would hand back two partners for an upstream of three
+    assert graph.top_sources("A1", top=1, metric="orders")[0][0] == "A1"
+
+    sub = graph.flow_subgraph("A1", upstream=3, downstream=0, metric="orders")
+    drawn = [d["cluster"] for _, d in sub.nodes(data=True) if not d.get("is_focus")]
+    assert drawn == ["C1", "C2", "C3"]
+
+
+def test_an_excluded_self_loop_is_still_counted_in_rest():
+    graph = RouteGraph.from_dataframe(make_self_loop_frame(),
+                                      grain_cols=("week_period",),
+                                      weight_col="requests")
+    sub = graph.flow_subgraph("A1", upstream=3, downstream=0, metric="orders",
+                              rest=True)
+    drawn = sum(d["value"] for _, d in sub.nodes(data=True)
+                if not d.get("is_focus") and not d.get("is_rest"))
+    rest = [d for _, d in sub.nodes(data=True) if d.get("is_rest")][0]
+
+    assert "A1" in rest["partners"]
+    assert drawn + rest["value"] == pytest.approx(
+        graph.node_value("A1", "orders", "in"))
+
+
+def test_a_kept_self_loop_is_drawn_on_its_own_node():
+    import matplotlib.pyplot as plt
+
+    graph = RouteGraph.from_dataframe(make_self_loop_frame(),
+                                      grain_cols=("week_period",),
+                                      weight_col="requests")
+    sub = graph.flow_subgraph("A1", upstream=3, downstream=3, metric="orders",
+                              exclude_self_loops=False)
+    focus = [n for n, d in sub.nodes(data=True) if d.get("is_focus")][0]
+    assert (focus, focus) in sub.edges
+    assert sub.nodes[focus]["value"] is not None
+
+    fig = graph.plot_flow("A1", upstream=3, downstream=3, metric="orders",
+                          exclude_self_loops=False, edge_metrics=["orders"])
+    rings = [p for p in fig.axes[0].patches
+             if type(p).__name__ == "Ellipse" and not p.get_fill()]
+    assert len(rings) == 1
+    assert any("1,800" in t.get_text() for t in fig.axes[0].texts)
+    plt.close(fig)
