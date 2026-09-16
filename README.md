@@ -121,11 +121,28 @@ cube over the grain dimensions - so sums stay exact, averages stay correctly
 weighted, and two tensors can be merged without re-reading the source rows.
 
 The metric columns are **yours**: the schema reads whatever numeric columns the
-frame has. Names that look like averages (`avg_`, `_rate`, `pct`, `ratio`, ...)
-are weighted-averaged, the rest are summed, and grain/id/categorical columns are
-never treated as metrics. Pass `sum_metrics=` / `mean_metrics=` to override the
-split, and `metric=` anywhere to choose the variable; with nothing named, calls
-fall back to `schema.default_metric` (the first sum metric).
+frame has. Names whose words look like averages (`avg`, `rate`, `pct`, `ratio`,
+`per`, ...) are weighted-averaged, the rest are summed, and grain/id/categorical
+columns are never treated as metrics. The test is on words rather than
+fragments, so `Bikelite_FE_per` is an average and `generated` is not a rate.
+Pass `sum_metrics=` / `mean_metrics=` to override the split, and `metric=`
+anywhere to choose the variable; with nothing named, calls fall back to
+`schema.default_metric`.
+
+No column name is assumed. The distance/duration pair behind `speed` is only
+adopted when the frame carries it, the default metric falls back to the row
+count, and a frame with nothing but two cluster columns still builds:
+
+```python
+ex = RouteExplorer(pairs, pickup_col="from_zone", drop_col="to_zone")
+ex.schema.default_metric        # 'row_count' - every frame has one
+```
+
+A broken setup stops you rather than quietly changing the answer: a `weight_col`
+that is not in the frame raises (the averages would silently go unweighted), the
+same column passed as both ends raises (every route would be a self loop), a
+missing id column raises, and a metric the frame does not have warns instead of
+sitting at NaN for ever.
 
 Install the extra:
 
@@ -456,6 +473,32 @@ ex.plot("A1", upstream=[5, 3], rank_by="node")
 Edge width and the edge tables still show the route's own metric; the value the
 ranking used is kept alongside it as `rank_value`. Use `node_direction=` to
 choose whether a cluster is measured on what comes in, what goes out, or both.
+
+### Everything the top-k left out
+
+A picture of the top few reads as though it were the whole story. `rest=True`
+adds one node per parent standing for the partners that did not make the cut:
+
+```python
+ex.plot("A1", upstream=[5, 3], downstream=3, rest=True)
+```
+
+Its numbers come from merging the left-out routes - sums summed, averages
+re-weighted by the weight column - so the rest node is exactly what those routes
+would give if they were one route, and two routes sharing a pickup and a drop
+fold together the same way. The top-k and the rest therefore add up to the
+cluster's real total:
+
+```text
+every route into A1 :     35,151.2
+the top 3 drawn     :     21,445.7   ['C4', 'C2', 'C3']
+the rest node       :     13,705.5   4 routes from ['A2', 'C1', 'C6', 'C5']
+top 3 + rest        :     35,151.2
+```
+
+`rest_label=` renames it, and `clusters_summary(clusters, direction=)` is the
+same merge on its own. As with every other node, the table drawn on it measures
+those clusters as a side of the graph; the edge into it measures the routes.
 
 ### What a cluster holds, in and out
 
