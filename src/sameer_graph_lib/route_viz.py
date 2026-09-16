@@ -197,7 +197,7 @@ def plot_flow(
     size_metric: str | None = None,
     per_parent: bool = True,
     rank_by: str = "edge",
-    node_direction: str = "out",
+    node_direction: str = "auto",
     mirror: bool = True,
     rest: bool = False,
     min_value: float | None = None,
@@ -293,13 +293,28 @@ def plot_flow(
 
     nodes = list(sub.nodes)
 
-    if node_direction not in ("in", "out", "both"):
+    if node_direction not in ("in", "out", "both", "auto"):
         raise ValueError("node_direction must be 'in', 'out' or 'both'")
 
     def cluster_of(node):
         return sub.nodes[node].get("cluster", node)
 
     rest_cache: dict = {}
+
+    def direction_for(node):
+        # "auto" measures each node on the side it is drawn: a source by what it
+        # sends, a drop by what it receives. The focus keeps the old meaning -
+        # the cluster as a pickup - unless it never appears as one, in which
+        # case a column of n/a helps nobody and it is measured as a drop.
+        if node_direction != "auto":
+            return node_direction
+        side = sub.nodes[node].get("side")
+        if side in ("source", "drop"):
+            return "out" if side == "source" else "in"
+        cluster = sub.nodes[node].get("cluster")
+        if cluster is not None and graph.graph.out_degree(cluster) == 0:
+            return "in"
+        return "out"
 
     def node_value(node, name):
         if node_values is not None and name in node_values.get(node, {}):
@@ -310,7 +325,7 @@ def plot_flow(
                 return float(data.get("routes", 0))
             if node not in rest_cache:
                 rest_cache[node] = graph.clusters_summary(
-                    data["partners"], direction=node_direction, **grain_values)
+                    data["partners"], direction=direction_for(node), **grain_values)
             return float(rest_cache[node].get(name, np.nan))
         if data.get("is_self"):
             if name == "count":
@@ -319,7 +334,7 @@ def plot_flow(
         if name == "count":
             return float(sub.degree(node))
         return graph.node_value(cluster_of(node), metric=name,
-                                direction=node_direction, **grain_values)
+                                direction=direction_for(node), **grain_values)
 
     def edge_value(u, v, name):
         carried = sub[u][v].get("metrics")

@@ -302,3 +302,37 @@ def test_a_single_column_plot_is_centred():
     assert abs(low + high) < 1e-6
     assert fig.get_size_inches()[0] < 12.0      # one column needs less width
     plt.close(fig)
+
+
+def test_a_cluster_that_only_receives_is_not_a_column_of_n_a():
+    """A pure sink has no outbound routes, so measuring it as a pickup is NaN."""
+    import matplotlib.pyplot as plt
+
+    frame = pd.DataFrame([
+        {"pickup_cluster": p, "drop_cluster": "Sink", "week_period": w,
+         "orders": orders, "requests": orders, "avg_distance": 3.0}
+        for p, orders in [("P1", 300.0), ("P2", 200.0), ("P3", 100.0)]
+        for w in ("weekday", "weekend")
+    ])
+    graph = RouteGraph.from_dataframe(frame, grain_cols=("week_period",),
+                                      weight_col="requests")
+
+    assert np.isnan(graph.node_value("Sink", "orders", "out"))
+    inbound = graph.node_value("Sink", "orders", "in")
+
+    fig = graph.plot_flow("Sink", upstream=3, downstream=3, metric="orders",
+                          node_metrics=["orders"])
+    tables = [t.get_text() for t in fig.axes[0].texts]
+    assert not any("n/a" in text for text in tables)
+    assert any(f"{inbound:,.0f}" in text for text in tables)
+    plt.close(fig)
+
+    # the sources keep their own meaning: what each one sends
+    assert any(f"{graph.node_value('P1', 'orders', 'out'):,.0f}" in text
+               for text in tables)
+
+    # and asking for a direction outright still overrides the choice
+    fig = graph.plot_flow("Sink", upstream=3, downstream=3, metric="orders",
+                          node_direction="out", node_metrics=["orders"])
+    assert any("n/a" in t.get_text() for t in fig.axes[0].texts)
+    plt.close(fig)

@@ -471,8 +471,14 @@ ex.plot("A1", upstream=[5, 3], rank_by="node")
 ```
 
 Edge width and the edge tables still show the route's own metric; the value the
-ranking used is kept alongside it as `rank_value`. Use `node_direction=` to
-choose whether a cluster is measured on what comes in, what goes out, or both.
+ranking used is kept alongside it as `rank_value`.
+
+`node_direction=` chooses whether a cluster is measured on what comes in, what
+goes out, or both. It defaults to `"auto"`, which measures each node on the side
+it is drawn: a source by what it sends, a drop by what it receives, and the
+focus as a pickup - unless the focus never appears as one, in which case it is
+measured as a drop rather than drawn as a column of `n/a`. Pass `"in"`, `"out"`
+or `"both"` to fix one meaning for every node.
 
 ### Everything the top-k left out
 
