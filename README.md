@@ -496,29 +496,41 @@ the rest node       :     13,705.5   4 routes from ['A2', 'C1', 'C6', 'C5']
 top 3 + rest        :     35,151.2
 ```
 
-A route from a cluster back to itself is part of this. By default
-`exclude_self_loops=True` keeps it out of the drawing, but it no longer costs
-you a slot in the top-k, and with `rest=True` its volume lands in the rest node
-so the totals still close. Pass `exclude_self_loops=False` to draw it, as a ring
-on the cluster it loops on, carrying its own table:
+### A cluster that feeds itself
 
-```python
-ex.plot("A1", upstream=3, downstream=3, exclude_self_loops=False)
+A route from a cluster back to itself gets **its own node**, drawn next to the
+cluster in the focus colour and carrying the loop's own metrics:
+
+```text
+                    (A)              A -> A, always drawn
+                     |
+     P1 ----\        v        /----> D1
+     P2 ------>   (  A  )   ------>   D2
+     rest ---/               \---->   rest
 ```
 
-The two sides judge it separately, each against its own top-k and `min_value`.
-A loop that is large next to the cluster's drops but small next to its sources
-is drawn on the downstream side only, and you get one ring rather than two:
+It is never ranked against the real partners, so it costs no place in the top-k,
+and it is **never folded into a rest node** - a rest node only ever stands for
+other clusters. It is drawn whatever the top-k, the `min_value` or the direction
+settings are, because it is not a partner competing for a place; it is the
+cluster itself.
+
+That keeps the accounting whole: for either side, the drawn partners plus the
+rest plus the loop come back to the cluster's total.
+
+`self_loops=` chooses the treatment - `"node"` (the default, above), `"ring"` to
+draw it on the cluster as a ring instead, or `"hide"` to leave it out entirely
+(the totals then exclude it, since it is not in the rest either):
 
 ```python
-ex.plot("A1", upstream=3, downstream=3, exclude_self_loops=False)
-# sources top 3: C1, C2, C3      - the loop missed the cut here
-# drops   top 3: A1, B1, B2      - and made it here
+ex.plot("A1", upstream=3, downstream=3)                    # its own node
+ex.plot("A1", upstream=3, downstream=3, self_loops="ring")  # a ring on A1
+ex.plot("A1", upstream=3, downstream=3, self_loops="hide")  # not drawn
 ```
 
-Turning a side off (`downstream=0`) takes its ring with it. When both sides keep
-it you see a ring in each side's colour, and `flow_subgraph` records the verdict
-on the node as `loops={"source": ..., "drop": ...}`.
+With `"ring"` the two sides judge it separately, each against its own top-k and
+`min_value`, and `flow_subgraph` records the verdict on the node as
+`loops={"source": ..., "drop": ...}`.
 
 `rest_label=` renames it, and `clusters_summary(clusters, direction=)` is the
 same merge on its own. As with every other node, the table drawn on it measures

@@ -4,23 +4,28 @@ Some exports carry rows whose pickup and drop are the same cluster - a trip that
 starts and ends in the same place. That row is real, and it is often the largest
 single route the cluster has, so what the flow plot does with it matters.
 
-By default the loop is kept out of the drawing (an arrow from a node to itself
-says nothing), but it is not kept out of the arithmetic:
+The loop gets its own node, drawn beside the cluster in the focus colour and
+carrying the loop's own metrics. It is:
 
-* it does not use up a place in the top x, so asking for three sources gives
-  three real sources rather than two plus a hole
-* with ``rest=True`` its volume lands in the rest node, so the drawn routes plus
-  the rest still come back to the cluster's real total
+* never ranked against the real partners, so it costs no place in the top x
+* never folded into a rest node - a rest node only ever stands for other
+  clusters
+* drawn whatever the top x or ``min_value`` happens to be, because it is not a
+  partner competing for a place, it is the cluster itself
 
-Pass ``exclude_self_loops=False`` and it is drawn instead, as a ring on the
-cluster it loops on, carrying its own metric table. It then does take a place in
-the top x - because you asked for it.
+which keeps the accounting whole: on either side, the drawn partners plus the
+rest plus the loop come back to the cluster's total.
+
+``self_loops=`` picks the treatment - ``"node"`` (the default), ``"ring"`` to
+draw it on the cluster as a ring instead, or ``"hide"`` to leave it out
+altogether.
 
 Run:
 
-    uv run --extra analysis python examples\\self_loop_flow.py
+    uv run --extra analysis python examples/self_loop_flow.py
 
-Saves ``self_loop_counted.png`` and ``self_loop_drawn.png``.
+Saves ``self_loop_node.png``, ``self_loop_ring.png`` and
+``self_loop_one_side.png``.
 """
 
 from __future__ import annotations
@@ -96,36 +101,44 @@ def report(explorer: RouteExplorer) -> dict:
     sub = graph.flow_subgraph("A1", upstream=3, downstream=0,
                               metric="orders", rest=True)
     drawn = [(data["cluster"], data["value"]) for _, data in sub.nodes(data=True)
-             if not data.get("is_focus") and not data.get("is_rest")]
+             if data.get("side") == "source" and not data.get("is_rest")]
     rest = [data for _, data in sub.nodes(data=True) if data.get("is_rest")][0]
     total = sum(value for _, value in drawn) + rest["value"]
 
+    loop = [data for _, data in sub.nodes(data=True) if data.get("is_self")][0]
+    total += loop["value"]
+
     print()
     print(f"asked for the top 3 sources, drew : {[name for name, _ in drawn]}")
+    print(f"the loop stands on its own        : {loop['value']:,.1f}")
     print(f"the rest node stands for          : {rest['partners']}")
+    assert "A1" not in rest["partners"], "rest must never hold A1 -> A1"
     print(f"drawn {sum(v for _, v in drawn):>14,.1f}")
     print(f"rest  {rest['value']:>14,.1f}")
+    print(f"loop  {loop['value']:>14,.1f}")
     print(f"total {total:>14,.1f}   every route into A1 {inbound:>14,.1f}")
-    assert round(total, 6) == round(inbound, 6), "the top-k and the rest must close"
+    assert round(total, 6) == round(inbound, 6), "drawn + rest + loop must close"
 
     # A1 -> A1 is a route out of A1 as well, so it lands in the rest node on the
     # drop side too. That rest node stands for A1 itself, and the table drawn on
     # it is A1 measured as a pickup - which is why it repeats the focus cluster's
     # own number. The edge into it is the loop, and that is what closes the sum.
     outbound = graph.node_value("A1", "orders", "out")
-    drops = graph.flow_subgraph("A1", upstream=0, downstream=3, metric="orders",
+    drops = graph.flow_subgraph("A1", upstream=0, downstream=2, metric="orders",
                                 rest=True)
     drop_rest = [data for _, data in drops.nodes(data=True)
                  if data.get("is_rest")][0]
     drawn_out = sum(data["value"] for _, data in drops.nodes(data=True)
-                    if not data.get("is_focus") and not data.get("is_rest"))
+                    if data.get("side") == "drop" and not data.get("is_rest"))
+    out_total = drawn_out + drop_rest["value"] + loop["value"]
     print()
-    print(f"the same on the way out, where the loop is the whole rest: "
-          f"{drop_rest['partners']}")
+    print("and the same on the way out:")
     print(f"drawn {drawn_out:>14,.1f}")
-    print(f"rest  {drop_rest['value']:>14,.1f}")
-    print(f"total {drawn_out + drop_rest['value']:>14,.1f}"
-          f"   every route out of A1 {outbound:>14,.1f}")
+    print(f"rest  {drop_rest['value']:>14,.1f}   {drop_rest['partners']}")
+    print(f"loop  {loop['value']:>14,.1f}")
+    print(f"total {out_total:>14,.1f}   every route out of A1 {outbound:>14,.1f}")
+    assert round(out_total, 6) == round(outbound, 6)
+    assert "A1" not in drop_rest["partners"]
     return {"inbound": inbound, "outbound": outbound}
 
 
@@ -150,36 +163,37 @@ def main() -> None:
     report(explorer)
     here = Path(__file__).resolve().parent
 
-    # the default: the loop is not drawn, but rest accounts for it
+    # the default: its own node, beside the cluster, outside the top-k
     save(explorer.plot(
         "A1", upstream=3, downstream=3, rest=True,
         node_metrics=["orders"], edge_metrics=["orders", "avg_distance"],
-        title="A1 -> A1 left out of the drawing, counted in rest",
-    ), here / "self_loop_counted.png")
+        title="A1 -> A1 on its own node, never inside rest",
+    ), here / "self_loop_node.png")
 
-    # asked for, so drawn - as a ring on A1, and it takes a place in the top 3
+    # the same loop drawn on the cluster instead
     save(explorer.plot(
-        "A1", upstream=3, downstream=3, exclude_self_loops=False,
+        "A1", upstream=3, downstream=3, rest=True, self_loops="ring",
         node_metrics=["orders"], edge_metrics=["orders", "avg_distance"],
-        title="A1 -> A1 drawn as a ring, and holding a place in the top 3",
-    ), here / "self_loop_drawn.png")
+        title='self_loops="ring": drawn on A1 rather than beside it',
+    ), here / "self_loop_ring.png")
 
     print()
-    print("with the loop drawn it holds one of the three places, so raise the")
-    print("top-k if you want the same number of outside clusters:")
-    for keep, kept_loop in ((3, False), (3, True), (4, True)):
+    print("the loop is there whatever the top x is, and takes no place in it:")
+    for keep in (1, 3, 5):
         sub = explorer.graph.flow_subgraph(
-            "A1", upstream=keep, downstream=0, metric="orders",
-            exclude_self_loops=not kept_loop)
+            "A1", upstream=keep, downstream=0, metric="orders", rest=True)
         outside = [data["cluster"] for _, data in sub.nodes(data=True)
-                   if not data.get("is_focus") and data["cluster"] != "A1"]
-        print(f"   upstream={keep}, loop {'drawn ' if kept_loop else 'hidden'}"
-              f" -> {len(outside)} outside clusters {outside}")
+                   if data.get("side") == "source" and not data.get("is_rest")]
+        loops = [data["cluster"] for _, data in sub.nodes(data=True)
+                 if data.get("is_self")]
+        print(f"   upstream={keep} -> {len(outside)} outside clusters {outside}"
+              f", loop node {loops}")
 
     # each side judges the loop on its own threshold, so a loop can be drawn
     # upstream, downstream, on both, or on neither
     print()
-    print("and each side decides for itself, against its own top x:")
+    print('with self_loops="ring" each side decides for itself, against its own')
+    print("top x, so a loop can be drawn on one side, both, or neither:")
     modest = RouteExplorer(
         make_modest_loop_frame(), grain_cols=("week_period",),
         sum_metrics=["orders", "requests"], mean_metrics=["avg_distance"],
@@ -188,16 +202,16 @@ def main() -> None:
     for up, down in ((3, 3), (3, 0), (0, 3)):
         sub = modest.graph.flow_subgraph(
             "A1", upstream=up, downstream=down, metric="orders",
-            exclude_self_loops=False)
+            self_loops="ring")
         focus = [node for node, data in sub.nodes(data=True)
                  if data.get("is_focus")][0]
         rings = sorted(sub.nodes[focus].get("loops") or {})
         print(f"   upstream={up} downstream={down} -> rings on {rings or 'neither side'}")
 
     save(modest.plot(
-        "A1", upstream=3, downstream=3, exclude_self_loops=False,
+        "A1", upstream=3, downstream=3, self_loops="ring",
         node_metrics=["orders"], edge_metrics=["orders"],
-        title="the loop clears the downstream threshold only",
+        title='self_loops="ring": the loop clears the downstream threshold only',
     ), here / "self_loop_one_side.png")
 
 

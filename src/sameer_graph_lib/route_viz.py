@@ -202,7 +202,8 @@ def plot_flow(
     edge_filter=None,
     node_filter=None,
     include_cross_edges: bool = False,
-    exclude_self_loops: bool = True,
+    self_loops: str = "node",
+    exclude_self_loops: bool | None = None,
     layout: str = "layered",
     level_gap: float = 2.6,
     spacing: float = 1.0,
@@ -253,7 +254,8 @@ def plot_flow(
         per_parent=per_parent, rank_by=rank_by, min_value=min_value,
         edge_filter=edge_filter, node_filter=node_filter, mirror=mirror,
         rest=rest, include_cross_edges=include_cross_edges,
-        exclude_self_loops=exclude_self_loops, **grain_values,
+        self_loops=self_loops, exclude_self_loops=exclude_self_loops,
+        **grain_values,
     )
     if sub.number_of_nodes() == 0:
         raise ValueError("Nothing to plot: the expansion selected no clusters")
@@ -308,6 +310,10 @@ def plot_flow(
                 rest_cache[node] = graph.clusters_summary(
                     data["partners"], direction=node_direction, **grain_values)
             return float(rest_cache[node].get(name, np.nan))
+        if data.get("is_self"):
+            if name == "count":
+                return float(data.get("routes", 0))
+            return float(data.get("metrics", {}).get(name, np.nan))
         if name == "count":
             return float(sub.degree(node))
         return graph.node_value(cluster_of(node), metric=name,
@@ -333,6 +339,8 @@ def plot_flow(
     for node in nodes:
         data = sub.nodes[node]
         if data.get("is_focus"):
+            border = focus_color
+        elif data.get("is_self"):
             border = focus_color
         else:
             base = source_color if data.get("side") == "source" else drop_color
@@ -375,7 +383,8 @@ def plot_flow(
         for subset, rad in ((straight, curve),
                             (sideways, cross_curve if cross_curve is not None else 0.25)):
             draw(subset,
-                 [_fade(source_color if d.get("side") == "source" else drop_color,
+                 [focus_color if d.get("side") == "self" else
+                  _fade(source_color if d.get("side") == "source" else drop_color,
                         int(d.get("depth") or 1), max_depth) for _, _, d in subset],
                  "solid", rad)
         draw(cross_edges, [cross_color] * len(cross_edges), "dashed",
@@ -424,7 +433,10 @@ def plot_flow(
                                   edgecolor=HAIRLINE, linewidth=0.6, alpha=0.95))
 
         if show_edge_values:
-            labelled = edges if label_cross_edges else flow_edges
+            # the self node already carries the loop's numbers in its own table
+            labelled = [(u, v, d) for u, v, d in
+                        (edges if label_cross_edges else flow_edges)
+                        if d.get("side") != "self"]
             edge_rows = {
                 (u, v): _table_rows(
                     [edge_value(u, v, name) for name in edge_metric_names],
@@ -506,6 +518,10 @@ def plot_flow(
             handles.append(mpatches.Patch(facecolor=_tint(drop_color),
                                           edgecolor=drop_color, linewidth=1.2,
                                           label=drop_text))
+        if "self" in sides:
+            handles.append(mpatches.Patch(facecolor=_tint(focus_color, 0.86),
+                                          edgecolor=focus_color, linewidth=1.2,
+                                          label="same cluster to itself"))
         if include_cross_edges:
             handles.append(mpatches.Patch(facecolor=_tint(cross_color),
                                           edgecolor=cross_color, linewidth=1.2,

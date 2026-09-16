@@ -157,6 +157,28 @@ def _cluster_side_tensor(source, clusters, direction, grain_values):
     return merged
 
 
+def _add_self_nodes(sub, source, metric, grain_values):
+    for node in list(sub.nodes):
+        data = sub.nodes[node]
+        if data.get("is_rest") or data.get("is_self"):
+            continue
+        cluster = data.get("cluster")
+        if cluster is None or not source.graph.has_edge(cluster, cluster):
+            continue
+        edge = source.graph[cluster][cluster]
+        summary = edge["tensor"].summary(**grain_values)
+        routes = edge.get("count", 1)
+        value = (float(routes) if metric == "count"
+                 else float(summary.get(metric, np.nan)))
+        key = ("self", node)
+        sub.add_node(key, cluster=cluster, level=data.get("level", 0),
+                     depth=data.get("depth", 0), side="self", value=value,
+                     is_focus=False, is_self=True, metrics=summary, routes=routes)
+        sub.add_edge(key, node, value=value, metric=metric, rank_value=value,
+                     depth=data.get("depth", 0), side="self", routes=routes,
+                     metrics=summary, is_self=True)
+
+
 def _add_rest(sub, source, left_out, side, sign, hop, metric, label, grain_values):
     import collections
 
@@ -1223,11 +1245,16 @@ class RouteGraph:
 
     def flow_subgraph(self, focus, upstream=5, downstream=5, metric=None,
                       per_parent=True, min_value=None, include_cross_edges=False,
-                      exclude_self_loops=True, edge_filter=None, node_filter=None,
+                      self_loops="node", exclude_self_loops=None,
+                      edge_filter=None, node_filter=None,
                       node_direction="both", rank_by="edge", mirror=True,
                       rest=False, rest_label="rest", **grain_values):
         metric = self.resolve_metric(metric)
         metric = "count" if metric == "count" else self.schema.validate_metric(metric)
+        if exclude_self_loops is not None:
+            self_loops = "hide" if exclude_self_loops else "node"
+        if self_loops not in ("node", "ring", "hide"):
+            raise ValueError("self_loops must be one of: node, ring, hide")
         focus_nodes = [f for f in _as_list(focus)]
         missing = [f for f in focus_nodes if f not in self.graph]
         if missing:
@@ -1270,8 +1297,9 @@ class RouteGraph:
                             min_value=min_value, rank_by=rank_by,
                             node_direction=node_direction, **grain_values):
                         entry = (parent_key, parent, partner, value)
-                        if ((exclude_self_loops and partner == parent)
-                                or (hop > 1 and partner in focus_set)):
+                        if partner == parent and self_loops != "ring":
+                            continue
+                        if hop > 1 and partner in focus_set:
                             skipped.append(entry)
                         else:
                             pool.append(entry)
@@ -1320,6 +1348,8 @@ class RouteGraph:
 
         expand("in", self._level_plan(upstream), -1)
         expand("out", self._level_plan(downstream), 1)
+        if self_loops == "node":
+            _add_self_nodes(sub, source, metric, grain_values)
 
         if include_cross_edges:
             selected = [(k, sub.nodes[k]["cluster"]) for k in sub.nodes]

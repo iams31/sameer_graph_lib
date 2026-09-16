@@ -851,90 +851,114 @@ def make_self_loop_frame():
     ])
 
 
-def test_a_self_loop_does_not_eat_a_top_k_slot():
+def test_a_self_loop_never_competes_for_a_top_k_slot():
     graph = RouteGraph.from_dataframe(make_self_loop_frame(),
                                       grain_cols=("week_period",),
                                       weight_col="requests")
 
-    # A1 -> A1 outranks every real source, so ranking it and then dropping it
-    # would hand back two partners for an upstream of three
+    # A1 -> A1 outranks every real source, so ranking it would cost a slot
     assert graph.top_sources("A1", top=1, metric="orders")[0][0] == "A1"
 
     sub = graph.flow_subgraph("A1", upstream=3, downstream=0, metric="orders")
-    drawn = [d["cluster"] for _, d in sub.nodes(data=True) if not d.get("is_focus")]
-    assert drawn == ["C1", "C2", "C3"]
+    partners = [d["cluster"] for _, d in sub.nodes(data=True)
+                if not d.get("is_focus") and not d.get("is_self")]
+    assert partners == ["C1", "C2", "C3"]
 
 
-def test_an_excluded_self_loop_is_still_counted_in_rest():
+def test_the_self_loop_is_drawn_whatever_the_top_k_is():
     graph = RouteGraph.from_dataframe(make_self_loop_frame(),
                                       grain_cols=("week_period",),
                                       weight_col="requests")
-    sub = graph.flow_subgraph("A1", upstream=3, downstream=0, metric="orders",
+    loop = graph.edge_value("A1", "A1", "orders")
+
+    for upstream, downstream in ((3, 3), (1, 1), (0, 2), (2, 0)):
+        sub = graph.flow_subgraph("A1", upstream=upstream, downstream=downstream,
+                                  metric="orders", rest=True, min_value=1e9)
+        selves = [d for _, d in sub.nodes(data=True) if d.get("is_self")]
+        assert len(selves) == 1, (upstream, downstream)
+        assert selves[0]["cluster"] == "A1"
+        assert selves[0]["value"] == pytest.approx(loop)
+
+
+def test_rest_never_holds_a_cluster_looping_on_itself():
+    graph = RouteGraph.from_dataframe(make_self_loop_frame(),
+                                      grain_cols=("week_period",),
+                                      weight_col="requests")
+    sub = graph.flow_subgraph("A1", upstream=2, downstream=1, metric="orders",
                               rest=True)
-    drawn = sum(d["value"] for _, d in sub.nodes(data=True)
-                if not d.get("is_focus") and not d.get("is_rest"))
-    rest = [d for _, d in sub.nodes(data=True) if d.get("is_rest")][0]
 
-    assert "A1" in rest["partners"]
-    assert drawn + rest["value"] == pytest.approx(
-        graph.node_value("A1", "orders", "in"))
+    for _, data in sub.nodes(data=True):
+        if data.get("is_rest"):
+            assert "A1" not in data["partners"]
+
+    # the drawn partners, the rest and the loop still account for the whole side
+    loop = [d["value"] for _, d in sub.nodes(data=True) if d.get("is_self")][0]
+    for side, direction in (("source", "in"), ("drop", "out")):
+        drawn = sum(d["value"] for _, d in sub.nodes(data=True)
+                    if d.get("side") == side and not d.get("is_rest"))
+        rest = sum(d["value"] for _, d in sub.nodes(data=True)
+                   if d.get("is_rest") and d["side"] == side)
+        assert drawn + rest + loop == pytest.approx(
+            graph.node_value("A1", "orders", direction))
 
 
-def test_a_kept_self_loop_is_drawn_on_its_own_node():
+def test_the_self_node_carries_the_loops_own_numbers():
     import matplotlib.pyplot as plt
 
     graph = RouteGraph.from_dataframe(make_self_loop_frame(),
                                       grain_cols=("week_period",),
                                       weight_col="requests")
-    sub = graph.flow_subgraph("A1", upstream=3, downstream=3, metric="orders",
-                              exclude_self_loops=False)
+    sub = graph.flow_subgraph("A1", upstream=3, downstream=3, metric="orders")
+    key = [n for n, d in sub.nodes(data=True) if d.get("is_self")][0]
     focus = [n for n, d in sub.nodes(data=True) if d.get("is_focus")][0]
-    assert (focus, focus) in sub.edges
 
-    # A1 -> A1 is the biggest route on both sides, so both expansions keep it
-    assert sorted(sub.nodes[focus]["loops"]) == ["drop", "source"]
+    assert (key, focus) in sub.edges
+    assert sub.nodes[key]["metrics"]["orders"] == pytest.approx(
+        graph.edge_value("A1", "A1", "orders"))
 
     fig = graph.plot_flow("A1", upstream=3, downstream=3, metric="orders",
-                          exclude_self_loops=False, edge_metrics=["orders"])
+                          node_metrics=["orders"])
+    texts = [t.get_text() for t in fig.axes[0].texts]
+    assert sum(1 for t in texts if t.strip() == "A1") == 2   # the focus and its loop
+    assert any("same cluster to itself" in entry.get_text()
+               for legend in fig.legends for entry in legend.get_texts())
+    plt.close(fig)
+
+
+def test_self_loops_can_still_be_a_ring_or_hidden():
+    import matplotlib.pyplot as plt
+
+    graph = RouteGraph.from_dataframe(make_self_loop_frame(),
+                                      grain_cols=("week_period",),
+                                      weight_col="requests")
+
+    ring = graph.flow_subgraph("A1", upstream=3, downstream=3, metric="orders",
+                               self_loops="ring")
+    focus = [n for n, d in ring.nodes(data=True) if d.get("is_focus")][0]
+    assert not [n for n, d in ring.nodes(data=True) if d.get("is_self")]
+    assert sorted(ring.nodes[focus]["loops"]) == ["drop", "source"]
+
+    fig = graph.plot_flow("A1", upstream=3, downstream=3, metric="orders",
+                          self_loops="ring", edge_metrics=["orders"])
     rings = [p for p in fig.axes[0].patches
              if type(p).__name__ == "Ellipse" and not p.get_fill()]
     assert len(rings) == 2
-    assert any("1,800" in t.get_text() for t in fig.axes[0].texts)
     plt.close(fig)
 
+    hidden = graph.flow_subgraph("A1", upstream=3, downstream=3, metric="orders",
+                                 self_loops="hide")
+    assert not [n for n, d in hidden.nodes(data=True) if d.get("is_self")]
+    assert not (hidden.nodes[
+        [n for n, d in hidden.nodes(data=True) if d.get("is_focus")][0]
+    ].get("loops") or {})
 
-def test_each_side_judges_the_self_loop_on_its_own_threshold():
-    import matplotlib.pyplot as plt
+    # the old keyword still works and still means the same two things
+    assert not [n for n, d in graph.flow_subgraph(
+        "A1", upstream=2, downstream=2, exclude_self_loops=True).nodes(data=True)
+        if d.get("is_self")]
+    assert [n for n, d in graph.flow_subgraph(
+        "A1", upstream=2, downstream=2, exclude_self_loops=False).nodes(data=True)
+        if d.get("is_self")]
 
-    # the loop is small against A1's sources and large against its drops
-    routes = [("A1", "A1", 1000.0), ("C1", "A1", 3000.0), ("C2", "A1", 2000.0),
-              ("C3", "A1", 1500.0), ("A1", "B1", 500.0), ("A1", "B2", 400.0)]
-    frame = pd.DataFrame([
-        {"pickup_cluster": p, "drop_cluster": d, "week_period": w,
-         "orders": orders, "requests": orders, "avg_distance": 3.0}
-        for p, d, orders in routes for w in ("weekday", "weekend")
-    ])
-    graph = RouteGraph.from_dataframe(frame, grain_cols=("week_period",),
-                                      weight_col="requests")
-
-    assert [n for n, _ in graph.top_sources("A1", top=3, metric="orders")] == \
-        ["C1", "C2", "C3"]
-    assert graph.top_drops("A1", top=3, metric="orders")[0][0] == "A1"
-
-    sub = graph.flow_subgraph("A1", upstream=3, downstream=3, metric="orders",
-                              exclude_self_loops=False)
-    focus = [n for n, d in sub.nodes(data=True) if d.get("is_focus")][0]
-    assert sorted(sub.nodes[focus]["loops"]) == ["drop"]
-
-    fig = graph.plot_flow("A1", upstream=3, downstream=3, metric="orders",
-                          exclude_self_loops=False, edge_metrics=["orders"])
-    rings = [p for p in fig.axes[0].patches
-             if type(p).__name__ == "Ellipse" and not p.get_fill()]
-    assert len(rings) == 1
-    plt.close(fig)
-
-    # turning a side off takes its loop with it
-    only_up = graph.flow_subgraph("A1", upstream=3, downstream=0, metric="orders",
-                                  exclude_self_loops=False)
-    focus = [n for n, d in only_up.nodes(data=True) if d.get("is_focus")][0]
-    assert not (only_up.nodes[focus].get("loops") or {})
+    with pytest.raises(ValueError, match="self_loops must be one of"):
+        graph.flow_subgraph("A1", self_loops="sometimes")

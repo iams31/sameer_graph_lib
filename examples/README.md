@@ -79,26 +79,22 @@ trip that starts and ends in the same place, often the largest single route the
 cluster has.
 
 ```powershell
-uv run --extra analysis python examples\self_loop_flow.py
+uv run --extra analysis python examples/self_loop_flow.py
 ```
 
-It prints the arithmetic and saves two images:
+The loop gets its own node beside the cluster. It takes no place in the top x,
+is never folded into a rest node, and is drawn whatever the top x is - so the
+drawn partners plus the rest plus the loop come back to the cluster's total, on
+both sides (`12,000 + 840 + 18,000 = 30,840` in, `1,800 + 300 + 18,000 = 20,100`
+out). The script asserts both.
 
-- `self_loop_counted.png` - the default. The loop is not drawn, but it costs no
-  place in the top x and `rest=True` carries its volume, so the drawn routes
-  plus the rest come back to the cluster's real total (`12,000 + 18,840 =
-  30,840` in, `2,100 + 18,000 = 20,100` out)
-- `self_loop_drawn.png` - `exclude_self_loops=False`, where the loop is a ring
-  on the cluster it loops on with its own metric table, and does take a place in
-  the top x
+Images:
 
-- `self_loop_one_side.png` - the two sides judge the loop separately, each
-  against its own top x, so a loop that is large beside a cluster's drops but
-  small beside its sources is drawn downstream only
-
-The script also shows what that costs: at `upstream=3` with the loop drawn you
-see two outside clusters rather than three, so raise the top x by one if you
-want the same number of partners.
+- `self_loop_node.png` - the default, the loop on its own node
+- `self_loop_ring.png` - `self_loops="ring"`, the same loop drawn on the cluster
+- `self_loop_one_side.png` - in ring mode the two sides judge it separately, so
+  a loop that is large beside a cluster's drops but small beside its sources is
+  drawn downstream only
 
 ## Hex metric graph images
 
